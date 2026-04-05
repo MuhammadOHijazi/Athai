@@ -13,6 +13,7 @@ import Generate from "@/pages/generate";
 import Models from "@/pages/models";
 import ModelDetail from "@/pages/model-detail";
 import Settings from "@/pages/settings";
+import athaiBrandLogo from "@assets/image_1775398238106.png";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
@@ -28,19 +29,83 @@ if (!clerkPubKey) {
   throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY in .env file");
 }
 
+function AuthPageShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen bg-background flex">
+      {/* Left panel — branding */}
+      <div className="hidden lg:flex lg:w-1/2 bg-[#0a0a0a] border-r border-border/30 flex-col justify-between p-12 relative overflow-hidden">
+        {/* Ambient glow */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(180,140,100,0.08)_0%,_transparent_60%)] pointer-events-none" />
+        <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-accent/20 to-transparent" />
+
+        {/* Logo */}
+        <div className="flex items-center gap-2.5 relative z-10">
+          <img src={athaiBrandLogo} alt="Ath.ai" className="h-6 w-auto" />
+          <span className="font-semibold tracking-tight text-sm text-foreground/90">Ath.ai</span>
+        </div>
+
+        {/* Center content */}
+        <div className="space-y-8 relative z-10">
+          <div className="inline-flex items-center gap-2 rounded-full border border-accent/20 bg-accent/5 px-3 py-1 text-xs font-medium text-accent">
+            <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+            AI-Powered 3D Generation
+          </div>
+          <div>
+            <h2 className="text-4xl font-bold tracking-tight text-foreground leading-tight mb-4">
+              From a single photo<br />to a production<br />3D asset.
+            </h2>
+            <p className="text-muted-foreground text-base leading-relaxed max-w-sm">
+              Upload any furniture photo. Remove.bg strips the background. InstantMesh generates the model. You download GLB, OBJ, or USDZ.
+            </p>
+          </div>
+
+          {/* Step list */}
+          <div className="space-y-4">
+            {[
+              { n: "01", label: "Upload a photo of any furniture" },
+              { n: "02", label: "AI removes background & generates 3D" },
+              { n: "03", label: "Preview interactively, then export" },
+            ].map((s) => (
+              <div key={s.n} className="flex items-center gap-4">
+                <span className="text-xs font-mono text-accent/60 w-6 shrink-0">{s.n}</span>
+                <span className="text-sm text-muted-foreground">{s.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Bottom tagline */}
+        <p className="text-xs text-muted-foreground/40 relative z-10">
+          Built for designers, architects & studios.
+        </p>
+      </div>
+
+      {/* Right panel — auth form */}
+      <div className="flex-1 flex flex-col items-center justify-center p-6 sm:p-10">
+        {/* Mobile logo */}
+        <div className="flex lg:hidden items-center gap-2 mb-8">
+          <img src={athaiBrandLogo} alt="Ath.ai" className="h-5 w-auto" />
+          <span className="font-semibold tracking-tight text-sm">Ath.ai</span>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function SignInPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-8">
+    <AuthPageShell>
       <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />
-    </div>
+    </AuthPageShell>
   );
 }
 
 function SignUpPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-8">
+    <AuthPageShell>
       <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
-    </div>
+    </AuthPageShell>
   );
 }
 

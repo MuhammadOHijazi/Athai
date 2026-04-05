@@ -28,37 +28,132 @@ function requireAuth(req: any, res: any, next: any) {
   next();
 }
 
-// Simulate async AI processing — in a real app this would call the Gradio API
-async function simulateProcessing(generationId: number): Promise<void> {
-  // After 3 seconds mark as processing
-  setTimeout(async () => {
-    try {
-      await db
-        .update(generationsTable)
-        .set({ status: "processing" })
-        .where(eq(generationsTable.id, generationId));
+// --- remove.bg: strip background from a base64 image ---
+async function removeBackground(base64Image: string): Promise<string> {
+  const apiKey = process.env.REMOVE_BG_API_KEY;
+  if (!apiKey) throw new Error("REMOVE_BG_API_KEY not set");
 
-      // After another 5 seconds mark as completed with mock model URLs
-      setTimeout(async () => {
-        try {
-          await db
-            .update(generationsTable)
-            .set({
-              status: "completed",
-              previewImageUrl: null,
-              modelGlbUrl: null,
-              modelObjUrl: null,
-              modelUsdzUrl: null,
-            })
-            .where(eq(generationsTable.id, generationId));
-        } catch (_err) {
-          // Silently handle
-        }
-      }, 5000);
-    } catch (_err) {
-      // Silently handle
+  // Strip data URL prefix if present
+  const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, "");
+
+  const formData = new FormData();
+  formData.append("image_file_b64", base64Data);
+  formData.append("size", "auto");
+
+  const response = await fetch("https://api.remove.bg/v1.0/removebg", {
+    method: "POST",
+    headers: { "X-Api-Key": apiKey },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`remove.bg error ${response.status}: ${text}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  return `data:image/png;base64,${buffer.toString("base64")}`;
+}
+
+// --- HuggingFace InstantMesh via Gradio REST API ---
+async function generateWith3DModel(imageBase64: string): Promise<string> {
+  const hfToken = process.env.HF_TOKEN;
+  if (!hfToken) throw new Error("HF_TOKEN not set");
+
+  // Use the TrelliS3D space which is more stable for furniture
+  // Fall back to InstantMesh
+  const spaceId = "TencentARC/InstantMesh";
+  const apiUrl = `https://api-inference.huggingface.co/models/${spaceId}`;
+
+  // Convert base64 to blob bytes for the Gradio client
+  const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+  const imageBuffer = Buffer.from(base64Data, "base64");
+
+  // Use Gradio HTTP API directly
+  const gradioApiUrl = `https://tencentarc-instantmesh.hf.space/run/predict`;
+
+  // First try Gradio predict endpoint
+  const predictRes = await fetch(gradioApiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${hfToken}`,
+    },
+    body: JSON.stringify({
+      fn_index: 0,
+      data: [`data:image/png;base64,${base64Data}`],
+    }),
+    signal: AbortSignal.timeout(180_000),
+  });
+
+  if (!predictRes.ok) {
+    throw new Error(`InstantMesh predict failed: ${predictRes.status} ${await predictRes.text()}`);
+  }
+
+  const result = await predictRes.json() as any;
+
+  // Gradio returns output in result.data array
+  if (result.data && result.data.length > 0) {
+    const glbOutput = result.data.find((d: any) =>
+      typeof d === "string" && (d.includes(".glb") || d.startsWith("data:model"))
+    );
+    if (glbOutput) return glbOutput;
+
+    // Sometimes returns a dict with name field (file path)
+    const fileOutput = result.data.find((d: any) => d?.name || d?.path);
+    if (fileOutput) {
+      const filePath = fileOutput.name || fileOutput.path;
+      // Fetch the actual file from Gradio
+      const fileRes = await fetch(`https://tencentarc-instantmesh.hf.space/file=${filePath}`, {
+        headers: { Authorization: `Bearer ${hfToken}` },
+      });
+      if (fileRes.ok) {
+        const buf = Buffer.from(await fileRes.arrayBuffer());
+        return `data:model/gltf-binary;base64,${buf.toString("base64")}`;
+      }
     }
-  }, 3000);
+  }
+
+  throw new Error("InstantMesh returned no usable output");
+}
+
+// --- Real AI processing pipeline ---
+async function runAiProcessing(generationId: number, imageBase64: string): Promise<void> {
+  try {
+    // 1. Mark as processing
+    await db
+      .update(generationsTable)
+      .set({ status: "processing" })
+      .where(eq(generationsTable.id, generationId));
+
+    // 2. Remove background
+    let processedImage = imageBase64;
+    try {
+      processedImage = await removeBackground(imageBase64);
+    } catch (err) {
+      console.error(`[gen ${generationId}] remove.bg failed, using original:`, err);
+    }
+
+    // 3. Generate 3D model via InstantMesh
+    const glbDataUrl = await generateWith3DModel(processedImage);
+
+    // 4. Mark as completed with model URL
+    await db
+      .update(generationsTable)
+      .set({
+        status: "completed",
+        modelGlbUrl: glbDataUrl,
+        previewImageUrl: processedImage,
+      })
+      .where(eq(generationsTable.id, generationId));
+  } catch (err) {
+    console.error(`[gen ${generationId}] AI processing failed:`, err);
+    await db
+      .update(generationsTable)
+      .set({ status: "failed" })
+      .where(eq(generationsTable.id, generationId));
+  }
 }
 
 router.get("/generations", requireAuth, async (req: any, res): Promise<void> => {
@@ -180,8 +275,13 @@ router.post("/generations/:id/process", requireAuth, async (req: any, res): Prom
     return;
   }
 
-  // Kick off async processing simulation
-  simulateProcessing(generation.id);
+  if (!generation.uploadedImageUrl) {
+    res.status(400).json({ error: "No image to process" });
+    return;
+  }
+
+  // Kick off real AI pipeline in background (non-blocking)
+  runAiProcessing(generation.id, generation.uploadedImageUrl);
 
   const [updated] = await db
     .update(generationsTable)

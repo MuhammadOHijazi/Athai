@@ -6,9 +6,57 @@ import { ModelViewer } from "@/components/3d/model-viewer";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, ArrowLeft, Loader2, AlertCircle } from "lucide-react";
+import { Download, ArrowLeft, Loader2, AlertCircle, CheckCircle2, Box } from "lucide-react";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
+import { motion } from "framer-motion";
+
+function downloadDataUrl(dataUrl: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function ExportButton({
+  label,
+  ext,
+  url,
+  isComplete,
+}: {
+  label: string;
+  ext: string;
+  url: string | null | undefined;
+  isComplete: boolean;
+}) {
+  const canDownload = isComplete && !!url;
+
+  const handleClick = () => {
+    if (!url) return;
+    if (url.startsWith("data:")) {
+      downloadDataUrl(url, `model.${ext.toLowerCase()}`);
+    } else {
+      window.open(url, "_blank");
+    }
+  };
+
+  return (
+    <Button
+      variant="outline"
+      className="w-full justify-between group"
+      disabled={!canDownload}
+      onClick={handleClick}
+    >
+      <div className="flex items-center gap-2">
+        <Download className="h-4 w-4" />
+        <span className="font-medium">{label}</span>
+      </div>
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-mono">.{ext}</span>
+    </Button>
+  );
+}
 
 export default function ModelDetail() {
   const params = useParams();
@@ -18,36 +66,35 @@ export default function ModelDetail() {
   const { data: generation, isLoading, isError } = useGetGeneration(id, {
     query: {
       enabled: !!id,
-      queryKey: getGetGenerationQueryKey(id)
-    }
+      queryKey: getGetGenerationQueryKey(id),
+    },
   });
 
-  // Poll status if pending or processing
+  // Poll status while pending or processing
   useEffect(() => {
     if (!generation) return;
-    
-    let interval: number;
-    if (generation.status === "pending" || generation.status === "processing") {
-      interval = window.setInterval(() => {
-        queryClient.invalidateQueries({ queryKey: getGetGenerationQueryKey(id) });
-      }, 3000);
-    }
+    if (generation.status !== "pending" && generation.status !== "processing") return;
 
-    return () => {
-      if (interval) window.clearInterval(interval);
-    };
+    const interval = window.setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: getGetGenerationQueryKey(id) });
+    }, 3000);
+
+    return () => window.clearInterval(interval);
   }, [generation?.status, id, queryClient]);
 
   if (isLoading) {
     return (
       <AppLayout>
-        <div className="space-y-6 animate-pulse">
-          <div className="h-8 w-1/4 bg-muted rounded"></div>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 h-[600px] bg-muted rounded-xl"></div>
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <Skeleton className="h-8 w-8 rounded-full" />
+            <Skeleton className="h-7 w-48" />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <Skeleton className="lg:col-span-2 h-[520px] rounded-xl" />
             <div className="space-y-4">
-              <div className="h-40 bg-muted rounded-xl"></div>
-              <div className="h-40 bg-muted rounded-xl"></div>
+              <Skeleton className="h-48 rounded-xl" />
+              <Skeleton className="h-40 rounded-xl" />
             </div>
           </div>
         </div>
@@ -58,128 +105,170 @@ export default function ModelDetail() {
   if (isError || !generation) {
     return (
       <AppLayout>
-        <div className="p-12 text-center flex flex-col items-center">
+        <div className="p-16 text-center flex flex-col items-center">
           <AlertCircle className="h-12 w-12 text-destructive mb-4" />
           <h2 className="text-xl font-bold">Model not found</h2>
           <p className="text-muted-foreground mt-2">This model may have been deleted or doesn't exist.</p>
           <Link href="/models" className="mt-6">
-            <Button variant="outline">Back to Models</Button>
+            <Button variant="outline">Back to My Models</Button>
           </Link>
         </div>
       </AppLayout>
     );
   }
 
+  const isComplete = generation.status === "completed";
+  const isFailed = generation.status === "failed";
+  const isWorking = generation.status === "pending" || generation.status === "processing";
+
   return (
     <AppLayout>
-      <div className="space-y-6 h-full flex flex-col max-h-screen pb-6">
-        <div className="flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-4">
-            <Link href="/models">
-              <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight flex items-center gap-3">
-                {generation.title}
-                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                  generation.status === 'completed' ? 'bg-green-500/10 text-green-500' :
-                  generation.status === 'failed' ? 'bg-destructive/10 text-destructive' :
-                  'bg-accent/10 text-accent animate-pulse'
-                }`}>
-                  {generation.status}
-                </span>
-              </h1>
-            </div>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center gap-4">
+          <Link href="/models">
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full shrink-0">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <div className="flex items-center gap-3 min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight truncate">{generation.title}</h1>
+            <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium shrink-0 ${
+              isComplete ? "bg-green-500/10 text-green-400 border-green-500/20" :
+              isFailed ? "bg-red-500/10 text-red-400 border-red-500/20" :
+              "bg-accent/10 text-accent border-accent/20 animate-pulse"
+            }`}>
+              {isWorking && <Loader2 className="h-3 w-3 animate-spin" />}
+              {isComplete && <CheckCircle2 className="h-3 w-3" />}
+              {isFailed && <AlertCircle className="h-3 w-3" />}
+              {generation.status}
+            </span>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0">
-          <div className="lg:col-span-2 rounded-xl overflow-hidden border border-border bg-[#111] relative min-h-[400px] lg:min-h-0">
-            {generation.status === 'completed' || generation.status === 'processing' || generation.status === 'pending' ? (
+        {/* Main grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* 3D Viewer */}
+          <div className="lg:col-span-2 rounded-xl overflow-hidden border border-border bg-[#0d0d0d] relative" style={{ minHeight: 480 }}>
+            {!isFailed ? (
               <>
-                <ModelViewer glbUrl={generation.modelGlbUrl} />
-                {(generation.status === 'pending' || generation.status === 'processing') && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-10 text-white">
-                    <Loader2 className="h-10 w-10 animate-spin text-accent mb-4" />
-                    <h3 className="text-lg font-medium">Generating 3D Model...</h3>
-                    <p className="text-sm text-white/70 mt-2 max-w-sm text-center">
-                      Our AI is analyzing the geometry and generating the model. This typically takes 1-2 minutes.
+                <ModelViewer glbUrl={generation.modelGlbUrl ?? null} />
+                {isWorking && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm z-10 text-white">
+                    <div className="relative mb-6">
+                      <div className="h-16 w-16 rounded-full border-2 border-accent/30 animate-ping absolute inset-0" />
+                      <div className="h-16 w-16 rounded-full border-2 border-accent/60 flex items-center justify-center relative">
+                        <Loader2 className="h-7 w-7 text-accent animate-spin" />
+                      </div>
+                    </div>
+                    <h3 className="text-lg font-semibold mb-2">
+                      {generation.status === "pending" ? "Queued for processing..." : "Generating 3D model..."}
+                    </h3>
+                    <p className="text-sm text-white/60 max-w-xs text-center">
+                      {generation.status === "pending"
+                        ? "Your job is in the queue. It will start shortly."
+                        : "AI is removing the background and building your 3D model. This takes 60–120 seconds."}
                     </p>
+                    <div className="mt-6 flex gap-1">
+                      {[0, 1, 2].map((i) => (
+                        <div
+                          key={i}
+                          className="h-1.5 w-1.5 rounded-full bg-accent/60 animate-bounce"
+                          style={{ animationDelay: `${i * 0.2}s` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {isComplete && (
+                  <div className="absolute top-4 left-4 z-10">
+                    <div className="flex items-center gap-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 px-3 py-1 text-xs text-white/80">
+                      <Box className="h-3 w-3" />
+                      Drag to rotate · Scroll to zoom
+                    </div>
                   </div>
                 )}
               </>
             ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center text-muted-foreground bg-muted/10">
-                <AlertCircle className="h-10 w-10 text-destructive mb-4" />
-                <p className="font-medium text-destructive">Generation Failed</p>
-                <p className="text-sm mt-2 max-w-xs">We couldn't generate a 3D model from this image. Please try again with a clearer photo.</p>
+              <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center" style={{ minHeight: 480 }}>
+                <AlertCircle className="h-12 w-12 text-destructive mb-4" />
+                <p className="font-semibold text-destructive text-lg">Generation failed</p>
+                <p className="text-sm text-muted-foreground mt-2 max-w-xs">
+                  We couldn't build a 3D model from this image. Try a clearer photo with good lighting and a single furniture piece.
+                </p>
+                <Link href="/generate" className="mt-6">
+                  <Button variant="outline">Try again</Button>
+                </Link>
               </div>
             )}
           </div>
 
-          <div className="space-y-6 overflow-y-auto">
-            <Card>
-              <CardContent className="p-6 space-y-6">
+          {/* Right panel */}
+          <div className="space-y-4 overflow-y-auto">
+            {/* Reference image + details */}
+            <Card className="border-border/50">
+              <CardContent className="p-5 space-y-5">
                 <div>
-                  <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">Reference Image</h3>
-                  <div className="rounded-lg overflow-hidden border border-border/50 bg-muted aspect-square">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Reference Photo</h3>
+                  <div className="rounded-lg overflow-hidden border border-border/40 bg-muted aspect-square">
                     {generation.uploadedImageUrl ? (
-                      <img src={generation.uploadedImageUrl} alt="Reference" className="w-full h-full object-cover" />
+                      <img
+                        src={generation.uploadedImageUrl}
+                        alt="Reference"
+                        className="w-full h-full object-cover"
+                      />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center">No image</div>
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Box className="h-8 w-8 text-muted-foreground/30" />
+                      </div>
                     )}
                   </div>
                 </div>
 
-                <div className="space-y-4 pt-4 border-t border-border/50">
-                  <div>
-                    <h3 className="text-sm font-medium text-muted-foreground mb-1">Details</h3>
-                    {generation.furnitureType && <p className="text-sm"><span className="font-medium">Type:</span> {generation.furnitureType}</p>}
-                    {generation.description && <p className="text-sm mt-1 text-muted-foreground">{generation.description}</p>}
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">
-                      Created on {format(new Date(generation.createdAt), "MMMM d, yyyy 'at' h:mm a")}
-                    </p>
+                <div className="border-t border-border/40 pt-4 space-y-2.5">
+                  {generation.furnitureType && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Type</span>
+                      <span className="font-medium">{generation.furnitureType}</span>
+                    </div>
+                  )}
+                  {generation.description && (
+                    <p className="text-xs text-muted-foreground leading-relaxed">{generation.description}</p>
+                  )}
+                  <div className="flex justify-between text-xs text-muted-foreground pt-1">
+                    <span>Created</span>
+                    <span>{format(new Date(generation.createdAt), "MMM d, yyyy")}</span>
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardContent className="p-6 space-y-4">
-                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Export Assets</h3>
-                <div className="space-y-2">
-                  <Button 
-                    variant="outline" 
-                    className="w-full justify-start" 
-                    disabled={!generation.modelGlbUrl}
-                    onClick={() => generation.modelGlbUrl && window.open(generation.modelGlbUrl, '_blank')}
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    Download GLB
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="w-full justify-start" 
-                    disabled={!generation.modelObjUrl}
-                    onClick={() => generation.modelObjUrl && window.open(generation.modelObjUrl, '_blank')}
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    Download OBJ
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="w-full justify-start" 
-                    disabled={!generation.modelUsdzUrl}
-                    onClick={() => generation.modelUsdzUrl && window.open(generation.modelUsdzUrl, '_blank')}
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    Download USDZ (AR)
-                  </Button>
+            {/* Export */}
+            <Card className="border-border/50">
+              <CardContent className="p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Export Assets</h3>
+                  {!isComplete && (
+                    <span className="text-[10px] text-muted-foreground">Available after generation</span>
+                  )}
                 </div>
+
+                <div className="space-y-2">
+                  <ExportButton label="3D Model" ext="GLB" url={generation.modelGlbUrl} isComplete={isComplete} />
+                  <ExportButton label="Wavefront" ext="OBJ" url={generation.modelObjUrl} isComplete={isComplete} />
+                  <ExportButton label="AR Quick Look" ext="USDZ" url={generation.modelUsdzUrl} isComplete={isComplete} />
+                </div>
+
+                {isComplete && (
+                  <motion.p
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex items-center gap-1.5 text-xs text-green-400"
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Saved to your account
+                  </motion.p>
+                )}
               </CardContent>
             </Card>
           </div>
