@@ -3,13 +3,18 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Ath.ai API specification — AI furniture 3D model generation platform
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: generations
+    description: 3D model generation operations
+  - name: dashboard
+    description: Dashboard aggregates and summaries
+
 paths:
   /healthz:
     get:
@@ -24,7 +29,192 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /generations:
+    get:
+      operationId: listGenerations
+      tags: [generations]
+      summary: List all generations for the authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of generations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Generation"
+        "401":
+          description: Unauthorized
+
+    post:
+      operationId: createGeneration
+      tags: [generations]
+      summary: Create a new 3D generation
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGenerationBody"
+      responses:
+        "201":
+          description: Generation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Generation"
+        "400":
+          description: Bad request
+        "401":
+          description: Unauthorized
+
+  /generations/{id}:
+    get:
+      operationId: getGeneration
+      tags: [generations]
+      summary: Get a specific generation
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Generation details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Generation"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Not found
+
+    patch:
+      operationId: updateGeneration
+      tags: [generations]
+      summary: Update generation metadata
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateGenerationBody"
+      responses:
+        "200":
+          description: Updated generation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Generation"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Not found
+
+    delete:
+      operationId: deleteGeneration
+      tags: [generations]
+      summary: Delete a generation
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Unauthorized
+        "404":
+          description: Not found
+
+  /generations/{id}/process:
+    post:
+      operationId: processGeneration
+      tags: [generations]
+      summary: Trigger AI processing for a generation
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Processing started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Generation"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Not found
+
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get dashboard summary stats for authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+        "401":
+          description: Unauthorized
+
+  /dashboard/recent:
+    get:
+      operationId: getRecentGenerations
+      tags: [dashboard]
+      summary: Get recent generations for dashboard feed
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Recent generations list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Generation"
+        "401":
+          description: Unauthorized
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +224,82 @@ components:
       required:
         - status
 
+    Generation:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        uploadedImageUrl:
+          type: ["string", "null"]
+        previewImageUrl:
+          type: ["string", "null"]
+        modelGlbUrl:
+          type: ["string", "null"]
+        modelObjUrl:
+          type: ["string", "null"]
+        modelUsdzUrl:
+          type: ["string", "null"]
+        furnitureType:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - userId
+        - title
+        - status
+        - createdAt
+        - updatedAt
+
+    CreateGenerationBody:
+      type: object
+      properties:
+        title:
+          type: string
+        uploadedImageUrl:
+          type: string
+        furnitureType:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+      required:
+        - title
+        - uploadedImageUrl
+
+    UpdateGenerationBody:
+      type: object
+      properties:
+        title:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+
+    DashboardSummary:
+      type: object
+      properties:
+        totalGenerations:
+          type: integer
+        completedGenerations:
+          type: integer
+        processingGenerations:
+          type: integer
+        pendingGenerations:
+          type: integer
+      required:
+        - totalGenerations
+        - completedGenerations
+        - processingGenerations
+        - pendingGenerations

@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Ath.ai"
+version = "1.0.0"
+id = "artifacts/ath-ai"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24666
+
+[services.development]
+run = "pnpm --filter @workspace/ath-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ath-ai", "run", "build" ]
+publicDir = "artifacts/ath-ai/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24666"
+BASE_PATH = "/"

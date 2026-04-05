@@ -1,0 +1,286 @@
+Build a premium, modern AI product website + web app for “Ath.ai” using Next.js, React, Tailwind CSS, Framer Motion, and a proper backend/auth/database setup.
+
+Product:
+Ath.ai is an AI platform that lets users upload a single photo of a furniture item and generate a high-quality 3D model from it. Users should be able to preview the generated 3D model, manage their generations, and download exported files from their account.
+
+Critical product rules:
+1. Users must create an account or sign in before they can generate any 3D model.
+2. Users must create an account or sign in before they can download any 3D model.
+3. Generated outputs must be stored in the user’s profile/account.
+4. Each user should have a personal dashboard where they can view previous uploads, generated models, statuses, previews, and downloadable files.
+5. The UI should encourage signup naturally before generation begins.
+
+Brand direction:
+Use the uploaded Ath.ai logo as the visual foundation. Match its aesthetic:
+- minimal
+- monochrome
+- geometric
+- angular
+- architectural
+- premium
+- modern
+- design-tech
+- subtle 3D/spatial cues
+
+Avoid:
+- generic SaaS templates
+- cheesy AI visuals
+- stock illustrations
+- clutter
+- cartoonish UI
+- weak auth flow
+- weak dashboard UX
+
+Tech stack:
+- Next.js
+- React
+- Tailwind CSS
+- Framer Motion
+- React Three Fiber or Three.js for 3D model preview
+- Authentication with Clerk, Supabase Auth, or NextAuth
+- Database with Supabase or PostgreSQL
+- Storage for uploaded images and generated files
+- Lucide icons
+- Fully responsive
+- Production-quality architecture
+- Reusable components
+- Clean code organization
+
+Main experience:
+The product should feel like a real AI platform with two connected parts:
+1. a premium marketing website
+2. a logged-in app/dashboard experience
+
+Core user flow:
+1. Visitor lands on homepage
+2. Visitor sees premium product explanation and demo
+3. Visitor clicks upload / try demo / generate
+4. If not authenticated, they are redirected to signup/login
+5. After account creation, user enters app/dashboard
+6. User uploads a furniture image
+7. System simulates or handles AI processing
+8. A generated 3D model appears in an interactive viewer
+9. The result is saved to the user’s account
+10. User can revisit prior generations from their profile/dashboard
+11. User can download their generated 3D models only while signed in
+
+Pages to build:
+
+1. Marketing homepage
+Include:
+- Hero section
+- Social proof
+- How it works
+- Features
+- Interactive product demo preview
+- Use cases
+- Why Ath.ai
+- Testimonials
+- Pricing or waitlist
+- FAQ
+- Final CTA
+- Footer
+
+Hero requirements:
+- Strong headline such as: “Turn one furniture photo into a 3D model”
+- Subheadline explaining AI-powered single-image reconstruction
+- Primary CTA: “Create Account”
+- Secondary CTA: “See How It Works”
+- Optional CTA: “Open App”
+- Clearly communicate that account creation is required before generation and download
+- Include premium visual showing:
+  photo upload → AI reconstruction → 3D preview → saved to account
+
+2. Authentication pages
+Create polished auth screens for:
+- Sign up
+- Log in
+- Forgot password
+- Optional social sign-in
+These pages should feel fully designed, branded, and premium.
+
+3. App dashboard
+After login, users enter a real app-like dashboard with:
+- left sidebar navigation
+- top navigation / account menu
+- upload workspace
+- recent generations
+- project grid/list
+- large 3D preview area
+- export/download controls
+- profile/account page
+- settings page
+- billing or plan page placeholder
+
+4. Profile / My Models page
+This is critical.
+Users should have a personal page showing:
+- uploaded furniture images
+- generated 3D models
+- generation status
+- timestamps
+- model thumbnails
+- model names
+- export formats available
+- ability to open/view a generation
+- ability to download only their own generated files
+
+Data model expectations:
+Create a realistic schema for:
+- users
+- projects
+- uploads
+- generations
+- model files
+- export formats
+- plan/subscription status
+
+Each generation record should store:
+- original uploaded image
+- project title
+- processing status
+- preview image
+- 3D model asset path
+- created date
+- downloadable formats
+- user ownership
+
+Generation gating logic:
+This must be implemented clearly in the UX and code:
+- Logged-out users can browse the site and maybe see a sample demo
+- Logged-out users cannot start a real generation
+- Logged-out users cannot download any model
+- When logged-out users click “Generate 3D Model” or “Download Model,” open a signup/login modal or redirect to auth
+- Only authenticated users can access generation actions and download actions
+- Save all generated results to the authenticated user’s account automatically
+
+Interactive product demo:
+Build a premium front-end workflow that feels real:
+- upload area for furniture image
+- image preview
+- processing/loading state
+- generated result panel
+- interactive 3D model viewer using React Three Fiber or Three.js
+- rotate, zoom, inspect
+- elegant studio lighting
+- premium presentation stage
+- soft shadows
+- model stats panel
+- export options: GLB / OBJ / USDZ
+
+Important auth rule for demo:
+- If a visitor is not logged in and tries to upload or generate, they must be prompted to create an account first
+- If a visitor is not logged in and tries to download, they must be prompted to create an account first
+- Once logged in, they can generate and the result should appear in their dashboard history
+
+Dashboard experience:
+Create a serious app-like environment, not just a marketing mockup.
+Include:
+- “New Generation” button
+- project cards
+- recent uploads
+- saved outputs
+- project details page
+- downloadable assets section
+- search/filter for previous generations
+- empty state for new users
+- polished loading and success states
+
+Suggested dashboard sections:
+- Overview
+- My Models
+- Upload New
+- Exports
+- Account Settings
+- Billing
+
+3D visualization requirements:
+The 3D viewer must be a standout feature:
+- smooth orbit controls
+- soft lighting
+- premium neutral background
+- subtle floor shadow
+- responsive container
+- polished loading experience
+- beautiful transition from processing to final preview
+- use realistic placeholder furniture models if needed
+
+Download/export requirements:
+- Only authenticated users can download
+- Download buttons should exist for GLB, OBJ, USDZ
+- Downloaded files should be tied to the current user’s generated project
+- Include UI that shows export readiness and file sizes
+- Add “Saved to your account” confirmation after generation
+
+Storage/account persistence:
+Implement or mock realistic persistence for:
+- uploaded image history
+- generated 3D models
+- project metadata
+- downloadable exports
+- user profile/account
+- recent activity
+
+Pricing / plan logic:
+Optionally include plan gating:
+- Free: limited generations
+- Pro: more generations + full exports
+- Enterprise: team workflows
+But regardless of plan, generation and download must require account creation.
+
+Homepage copy direction:
+- clear
+- intelligent
+- premium
+- no hypey buzzwords
+- focus on trust, quality, workflow efficiency, and product credibility
+
+Visual design system:
+- color palette: black, white, soft gray
+- subtle accent: muted electric blue for interactions only
+- bold modern sans-serif typography
+- lots of whitespace
+- premium spacing and hierarchy
+- angular details subtly inspired by the logo
+- minimal and elegant motion
+- feel like Apple x Vercel x premium design software
+
+Required UX details:
+- strong CTA to create account
+- signup prompts at the right moments
+- dashboard should clearly show ownership of generated outputs
+- users should feel their account is the place where all models live
+- generation history must be easy to revisit
+- downloading should feel secure and professional
+
+Implementation expectations:
+- Build both landing page and authenticated app
+- Use reusable components
+- Separate public and authenticated routes
+- Add route protection for generation and download flows
+- Store generated items per user
+- Add mock backend logic if full backend is not implemented
+- Ensure all flows are easy to run in Replit
+
+Before coding:
+First provide:
+1. sitemap
+2. auth flow
+3. user flow
+4. database schema
+5. route structure
+6. component architecture
+7. dashboard wireframe
+Then build the implementation.
+
+Deliverables:
+- full codebase
+- file structure
+- landing page
+- auth pages
+- dashboard/app
+- protected generation flow
+- protected download flow
+- account-based storage of outputs
+- interactive 3D preview
+- clean run instructions
