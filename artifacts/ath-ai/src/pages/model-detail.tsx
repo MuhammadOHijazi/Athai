@@ -1,12 +1,12 @@
 import { useEffect } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
-import { useGetGeneration, getGetGenerationQueryKey } from "@workspace/api-client-react";
+import { useGetGeneration, useProcessGeneration, getGetGenerationQueryKey } from "@workspace/api-client-react";
 import { useParams, Link } from "wouter";
 import { ModelViewer } from "@/components/3d/model-viewer";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, ArrowLeft, Loader2, AlertCircle, CheckCircle2, Box } from "lucide-react";
+import { Download, ArrowLeft, Loader2, AlertCircle, CheckCircle2, Box, RefreshCw } from "lucide-react";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -69,6 +69,8 @@ export default function ModelDetail() {
       queryKey: getGetGenerationQueryKey(id),
     },
   });
+
+  const processGeneration = useProcessGeneration();
 
   // Poll status while pending or processing
   useEffect(() => {
@@ -191,14 +193,33 @@ export default function ModelDetail() {
               </>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center" style={{ minHeight: 480 }}>
-                <AlertCircle className="h-12 w-12 text-destructive mb-4" />
-                <p className="font-semibold text-destructive text-lg">Generation failed</p>
-                <p className="text-sm text-muted-foreground mt-2 max-w-xs">
-                  We couldn't build a 3D model from this image. Try a clearer photo with good lighting and a single furniture piece.
+                <div className="h-16 w-16 rounded-full bg-red-500/10 flex items-center justify-center mb-5">
+                  <AlertCircle className="h-8 w-8 text-red-400" />
+                </div>
+                <p className="font-semibold text-lg text-foreground mb-2">Generation failed</p>
+                <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">
+                  The AI pipeline couldn't build a 3D model from this image. This can happen with complex backgrounds, low resolution, or API timeouts.
                 </p>
-                <Link href="/generate" className="mt-6">
-                  <Button variant="outline">Try again</Button>
-                </Link>
+                <div className="flex flex-col sm:flex-row items-center gap-3 mt-6">
+                  <Button
+                    variant="default"
+                    className="gap-2 bg-foreground text-background hover:bg-foreground/90"
+                    disabled={processGeneration.isPending}
+                    onClick={async () => {
+                      await processGeneration.mutateAsync({ id });
+                      queryClient.invalidateQueries({ queryKey: getGetGenerationQueryKey(id) });
+                    }}
+                  >
+                    {processGeneration.isPending ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Retrying...</>
+                    ) : (
+                      <><RefreshCw className="h-4 w-4" /> Retry generation</>
+                    )}
+                  </Button>
+                  <Link href="/generate">
+                    <Button variant="outline">Upload new photo</Button>
+                  </Link>
+                </div>
               </div>
             )}
           </div>
