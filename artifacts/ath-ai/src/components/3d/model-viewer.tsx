@@ -1,57 +1,69 @@
 import React, { Suspense, useRef } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Stage, useGLTF, Environment } from "@react-three/drei";
+import { Canvas, useFrame, useLoader } from "@react-three/fiber";
+import { OrbitControls, Stage, Environment } from "@react-three/drei";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader";
 import * as THREE from "three";
 
-// A sophisticated placeholder geometry for when there's no GLB URL
+// ─── Placeholder ──────────────────────────────────────────────────────────────
+
 function PlaceholderChair() {
   const group = useRef<THREE.Group>(null);
-  
   useFrame((state) => {
-    if (group.current) {
-      group.current.rotation.y = state.clock.elapsedTime * 0.2;
-    }
+    if (group.current) group.current.rotation.y = state.clock.elapsedTime * 0.2;
   });
-
   return (
     <group ref={group}>
-      {/* Seat */}
       <mesh position={[0, 0.5, 0]} castShadow receiveShadow>
         <boxGeometry args={[1, 0.1, 1]} />
         <meshStandardMaterial color="#333" roughness={0.7} metalness={0.2} />
       </mesh>
-      
-      {/* Backrest */}
       <mesh position={[0, 1, -0.45]} castShadow receiveShadow>
         <boxGeometry args={[1, 1, 0.1]} />
         <meshStandardMaterial color="#333" roughness={0.7} metalness={0.2} />
       </mesh>
-      
-      {/* Legs */}
-      <mesh position={[-0.45, 0.25, -0.45]} castShadow receiveShadow>
-        <cylinderGeometry args={[0.05, 0.05, 0.5]} />
-        <meshStandardMaterial color="#666" roughness={0.4} metalness={0.8} />
-      </mesh>
-      <mesh position={[0.45, 0.25, -0.45]} castShadow receiveShadow>
-        <cylinderGeometry args={[0.05, 0.05, 0.5]} />
-        <meshStandardMaterial color="#666" roughness={0.4} metalness={0.8} />
-      </mesh>
-      <mesh position={[-0.45, 0.25, 0.45]} castShadow receiveShadow>
-        <cylinderGeometry args={[0.05, 0.05, 0.5]} />
-        <meshStandardMaterial color="#666" roughness={0.4} metalness={0.8} />
-      </mesh>
-      <mesh position={[0.45, 0.25, 0.45]} castShadow receiveShadow>
-        <cylinderGeometry args={[0.05, 0.05, 0.5]} />
-        <meshStandardMaterial color="#666" roughness={0.4} metalness={0.8} />
-      </mesh>
+      {[[-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.25, z]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.05, 0.05, 0.5]} />
+          <meshStandardMaterial color="#666" roughness={0.4} metalness={0.8} />
+        </mesh>
+      ))}
     </group>
   );
 }
 
-function Model({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
-  return <primitive object={scene} />;
+// ─── GLB / GLTF model ─────────────────────────────────────────────────────────
+
+function GltfModel({ url }: { url: string }) {
+  const gltf = useLoader(GLTFLoader, url);
+  return <primitive object={gltf.scene} />;
 }
+
+// ─── OBJ model ────────────────────────────────────────────────────────────────
+
+function ObjModel({ url }: { url: string }) {
+  const obj = useLoader(OBJLoader, url);
+  // Apply a default material so untextured OBJ files render visibly
+  obj.traverse((child) => {
+    if (child instanceof THREE.Mesh && !child.material) {
+      child.material = new THREE.MeshStandardMaterial({ color: "#aaa", roughness: 0.6, metalness: 0.1 });
+    }
+  });
+  return <primitive object={obj} />;
+}
+
+// ─── Smart model loader ────────────────────────────────────────────────────────
+
+function ModelAsset({ url }: { url: string }) {
+  // Determine format from content type or URL pattern
+  const isObj = url.includes("application/octet-stream") === false &&
+    (url.toLowerCase().includes(".obj") ||
+     url.includes("text/plain") ||
+     (url.startsWith("data:") && url.slice(5, 30).includes("text")));
+  return isObj ? <ObjModel url={url} /> : <GltfModel url={url} />;
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
 
 export function ModelViewer({ glbUrl }: { glbUrl: string | null }) {
   return (
@@ -62,14 +74,12 @@ export function ModelViewer({ glbUrl }: { glbUrl: string | null }) {
           <ambientLight intensity={0.5} />
           <directionalLight castShadow position={[5, 5, 5]} intensity={1} shadow-mapSize={[1024, 1024]} />
           <directionalLight position={[-5, 5, -5]} intensity={0.5} />
-          
           <Stage environment="city" intensity={0.5} adjustCamera={false}>
-            {glbUrl ? <Model url={glbUrl} /> : <PlaceholderChair />}
+            {glbUrl ? <ModelAsset url={glbUrl} /> : <PlaceholderChair />}
           </Stage>
-          
-          <OrbitControls 
-            autoRotate={!glbUrl} 
-            autoRotateSpeed={0.5} 
+          <OrbitControls
+            autoRotate={!glbUrl}
+            autoRotateSpeed={0.5}
             enablePan={false}
             minDistance={2}
             maxDistance={10}
@@ -77,7 +87,6 @@ export function ModelViewer({ glbUrl }: { glbUrl: string | null }) {
           />
         </Suspense>
       </Canvas>
-      
       {!glbUrl && (
         <div className="absolute bottom-4 left-0 right-0 flex justify-center pointer-events-none">
           <div className="bg-black/50 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 text-xs text-white/70">
