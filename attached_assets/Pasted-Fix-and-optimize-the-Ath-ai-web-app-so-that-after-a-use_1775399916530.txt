@@ -1,0 +1,137 @@
+Fix and optimize the Ath.ai web app so that after a user uploads an image, the “Generate 3D Model” action becomes clearly enabled and the user can successfully preview the generated 3D result.
+
+Current problem to solve:
+- A user uploads an image
+- But the app does not properly activate the “Generate 3D Model” flow
+- The user cannot continue to generation
+- The user also cannot clearly see the generated 3D output
+
+Your task:
+Diagnose and fix the upload-to-generate-to-preview flow so it feels complete, intuitive, and production-ready.
+
+Important product rules:
+1. Users must be authenticated before generating a 3D model
+2. Users must be authenticated before downloading a 3D model
+3. Logged-out users may upload only as a demo preview if desired, but when they click Generate they must be redirected to Sign Up / Log In
+4. Once logged in, uploading an image must activate the Generate button immediately when validation passes
+5. After generation, the result must be visible in a proper 3D viewer
+6. Generated outputs must be saved to the user’s account/dashboard
+
+Main fixes required:
+- Ensure image upload updates component state correctly
+- Validate uploaded file type and size
+- Show uploaded image thumbnail immediately
+- Enable the “Generate 3D Model” button once a valid image is uploaded and the user is authenticated
+- If user is not authenticated, replace enabled generation with a clear CTA like “Create account to generate”
+- On click, generation should begin with a loading/progress state
+- After generation completes, display an interactive 3D preview
+- Save the generated result to the authenticated user’s profile
+- Allow download only for authenticated users and only for their own generated assets
+
+Expected UX flow:
+1. User uploads furniture image
+2. Uploaded image preview appears immediately
+3. App checks auth state
+4. If logged in:
+   - Generate button becomes active
+   - Clicking it starts generation
+   - Show progress/loading states
+   - Show generated 3D model in viewer
+   - Save result in dashboard
+5. If logged out:
+   - Show clear message: “Create an account to generate and save 3D models”
+   - Show CTA button to sign up / log in
+   - Prevent generation until authenticated
+
+Fix these likely issues:
+- broken state update after file upload
+- disabled button logic tied to wrong conditions
+- missing auth check integration
+- missing preview state after generation
+- generate handler not firing
+- upload component not passing file to generation pipeline
+- result viewer not receiving generated model data
+- dashboard not refreshing after generation
+- missing loading/error/success states
+
+Implementation requirements:
+- Audit the upload component, generation handler, auth state, and preview rendering
+- Refactor state flow so it is explicit and reliable
+- Use clear states such as:
+  - idle
+  - file_selected
+  - auth_required
+  - ready_to_generate
+  - generating
+  - generation_complete
+  - generation_error
+- Make button states visually obvious:
+  - disabled when no file
+  - auth CTA when not logged in
+  - active when ready
+  - loading during generation
+  - success when complete
+
+UI requirements:
+- Show uploaded image card
+- Show file name, size, and validation status
+- Show generation progress bar or animated processing state
+- Show success state after generation
+- Show interactive 3D viewer using React Three Fiber or Three.js
+- Let the user rotate, zoom, and inspect the model
+- Show export/download buttons only when generation is complete and user is authenticated
+- Add “Saved to your account” confirmation
+
+Auth + gating logic:
+- Protect generation and download actions
+- Do not let users generate without login
+- Do not let users download without login
+- Make the gating feel smooth and premium, not broken
+- If the user clicks Generate while logged out, open a polished auth modal or redirect to auth page
+- After successful login, return the user to the upload/generation flow with their uploaded image preserved if possible
+
+Data persistence:
+- Save uploaded image reference
+- Save generated project
+- Save preview thumbnail
+- Save 3D asset metadata
+- Associate everything with the current authenticated user
+- Show the saved generation in “My Models” or dashboard history immediately
+
+Technical stack:
+- Next.js
+- React
+- Tailwind CSS
+- Framer Motion
+- React Three Fiber or Three.js
+- Clerk / Supabase Auth / NextAuth
+- Supabase or PostgreSQL for persistence
+
+What I want you to do:
+1. Inspect the current upload and generate flow
+2. Find why the generate button is not activating after image upload
+3. Fix the state logic and event flow
+4. Make the 3D preview appear correctly after generation
+5. Improve the UX so the flow is obvious and polished
+6. Ensure account-based gating and saved outputs work correctly
+
+Before writing final code:
+First explain:
+- the root cause of the disabled generate flow
+- the root cause of the missing 3D preview
+- the exact components/files to update
+- the improved state flow
+- the auth-gated generation logic
+
+Then implement the fix.
+
+Deliverables:
+- corrected upload component
+- corrected generate button logic
+- corrected generation handler
+- corrected auth gating flow
+- corrected 3D preview rendering
+- dashboard persistence for generated outputs
+- improved UI states
+- clear file-by-file changes
+- final run instructions
