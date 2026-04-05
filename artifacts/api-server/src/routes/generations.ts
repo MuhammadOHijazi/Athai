@@ -28,35 +28,46 @@ function requireAuth(req: any, res: any, next: any) {
   next();
 }
 
-// ─── remove.bg: strip image background ────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function log(genId: number, msg: string) {
+  console.log(`[gen ${genId}] ${msg}`);
+}
+
+async function markStep(genId: number, fields: Record<string, unknown>) {
+  await db.update(generationsTable).set(fields as any).where(eq(generationsTable.id, genId));
+}
+
+// ─── remove.bg ───────────────────────────────────────────────────────────────
+
 async function removeBackground(base64Image: string): Promise<string> {
   const apiKey = process.env.REMOVE_BG_API_KEY;
   if (!apiKey) throw new Error("REMOVE_BG_API_KEY not set");
 
   const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, "");
-
   const params = new URLSearchParams();
   params.append("image_file_b64", base64Data);
   params.append("size", "auto");
   params.append("type", "product");
 
-  const response = await fetch("https://api.remove.bg/v1.0/removebg", {
+  const res = await fetch("https://api.remove.bg/v1.0/removebg", {
     method: "POST",
     headers: { "X-Api-Key": apiKey, "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
     signal: AbortSignal.timeout(30_000),
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`remove.bg ${response.status}: ${text.slice(0, 200)}`);
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`remove.bg ${res.status}: ${t.slice(0, 200)}`);
   }
 
-  const buf = Buffer.from(await response.arrayBuffer());
+  const buf = Buffer.from(await res.arrayBuffer());
   return `data:image/png;base64,${buf.toString("base64")}`;
 }
 
-// ─── Gradio 4.x SSE API helper ─────────────────────────────────────────────
+// ─── Gradio 4.x SSE API ──────────────────────────────────────────────────────
+
 async function callGradioSSE(
   spaceUrl: string,
   apiName: string,
@@ -64,194 +75,210 @@ async function callGradioSSE(
   timeoutMs = 300_000,
 ): Promise<unknown[]> {
   const hfToken = process.env.HF_TOKEN;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (hfToken) headers["Authorization"] = `Bearer ${hfToken}`;
+  const authHeaders: Record<string, string> = hfToken ? { Authorization: `Bearer ${hfToken}` } : {};
 
-  // Step 1: submit
   const submitRes = await fetch(`${spaceUrl}/call/${apiName}`, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({ data }),
     signal: AbortSignal.timeout(30_000),
   });
 
   if (!submitRes.ok) {
     const text = await submitRes.text();
-    throw new Error(`Gradio submit [${apiName}] failed ${submitRes.status}: ${text.slice(0, 300)}`);
+    throw new Error(`Gradio submit [${apiName}] ${submitRes.status}: ${text.slice(0, 300)}`);
   }
 
   const { event_id } = (await submitRes.json()) as { event_id: string };
-  if (!event_id) throw new Error(`No event_id returned for [${apiName}]`);
+  if (!event_id) throw new Error(`No event_id from [${apiName}]`);
 
-  // Step 2: stream SSE result
   const pollRes = await fetch(`${spaceUrl}/call/${apiName}/${event_id}`, {
-    headers: hfToken ? { Authorization: `Bearer ${hfToken}` } : {},
+    headers: authHeaders,
     signal: AbortSignal.timeout(timeoutMs),
   });
-
-  if (!pollRes.ok) {
-    throw new Error(`Gradio poll [${apiName}] failed ${pollRes.status}`);
-  }
+  if (!pollRes.ok) throw new Error(`Gradio poll [${apiName}] ${pollRes.status}`);
 
   const raw = await pollRes.text();
-
-  // Parse SSE text — find the "complete" event
-  const blocks = raw.split("\n\n");
-  for (const block of blocks) {
+  for (const block of raw.split("\n\n")) {
     const lines = block.split("\n");
-    const eventLine = lines.find((l) => l.startsWith("event:"));
-    const dataLine = lines.find((l) => l.startsWith("data:"));
-    if (!eventLine || !dataLine) continue;
-
-    const eventType = eventLine.replace("event:", "").trim();
-    const payload = dataLine.replace("data:", "").trim();
-
-    if (eventType === "error") {
-      throw new Error(`Gradio [${apiName}] error: ${payload}`);
-    }
-    if (eventType === "complete") {
-      try {
-        return JSON.parse(payload) as unknown[];
-      } catch {
-        return [payload];
-      }
+    const evtType = lines.find((l) => l.startsWith("event:"))?.replace("event:", "").trim();
+    const payload = lines.find((l) => l.startsWith("data:"))?.replace("data:", "").trim();
+    if (!evtType || !payload) continue;
+    if (evtType === "error") throw new Error(`Gradio [${apiName}] error: ${payload}`);
+    if (evtType === "complete") {
+      try { return JSON.parse(payload) as unknown[]; } catch { return [payload]; }
     }
   }
-
-  throw new Error(`Gradio [${apiName}]: no complete event in SSE response`);
+  throw new Error(`Gradio [${apiName}]: no complete event found`);
 }
 
-// ─── Fetch a Gradio file URL and return it as base64 data URL ─────────────
-async function fetchGradioFile(fileUrl: string): Promise<string | null> {
+function fileDataInput(base64: string, mime = "image/png") {
+  const pureB64 = base64.replace(/^data:image\/\w+;base64,/, "");
+  return {
+    path: "input.png",
+    url: `data:${mime};base64,${pureB64}`,
+    orig_name: "input.png",
+    mime_type: mime,
+    meta: { _type: "gradio.FileData" },
+  };
+}
+
+async function resolveGradioUrl(output: unknown, spaceUrl: string): Promise<string | null> {
+  if (!output) return null;
+  if (typeof output === "string") {
+    if (output.startsWith("data:") || output.startsWith("http")) return output;
+    return `${spaceUrl}/file=${output}`;
+  }
+  const o = output as Record<string, unknown>;
+  const rawUrl = (o.url || (o.path ? `${spaceUrl}/file=${o.path}` : null) || (o.name ? `${spaceUrl}/file=${o.name}` : null)) as string | null;
+  if (!rawUrl) return null;
+
+  // Download and encode as data URL so it persists beyond Gradio session
   try {
     const hfToken = process.env.HF_TOKEN;
-    const res = await fetch(fileUrl, {
+    const dlRes = await fetch(rawUrl, {
       headers: hfToken ? { Authorization: `Bearer ${hfToken}` } : {},
       signal: AbortSignal.timeout(60_000),
     });
-    if (!res.ok) return null;
-    const contentType = res.headers.get("content-type") || "model/gltf-binary";
-    const buf = Buffer.from(await res.arrayBuffer());
-    return `data:${contentType};base64,${buf.toString("base64")}`;
+    if (!dlRes.ok) return rawUrl;
+    const ct = dlRes.headers.get("content-type") || "application/octet-stream";
+    const buf = Buffer.from(await dlRes.arrayBuffer());
+    return `data:${ct};base64,${buf.toString("base64")}`;
   } catch {
-    return null;
+    return rawUrl;
   }
 }
 
-// ─── Extract URL from Gradio file output ──────────────────────────────────
-function extractUrl(output: unknown, spaceUrl: string): string | null {
-  if (!output) return null;
-  if (typeof output === "string") {
-    if (output.startsWith("http") || output.startsWith("data:")) return output;
-    // Relative path from Gradio
-    return `${spaceUrl}/file=${output}`;
-  }
-  const obj = output as Record<string, unknown>;
-  if (obj.url && typeof obj.url === "string") return obj.url;
-  if (obj.path && typeof obj.path === "string") return `${spaceUrl}/file=${obj.path}`;
-  if (obj.name && typeof obj.name === "string") return `${spaceUrl}/file=${obj.name}`;
-  return null;
-}
+// ─── InstantMesh pipeline (full 3-step multiview) ────────────────────────────
 
-// ─── InstantMesh 3-step pipeline ──────────────────────────────────────────
-async function generateInstantMesh(cleanImageBase64: string): Promise<string> {
+async function runInstantMesh(genId: number, cleanImg: string): Promise<void> {
   const spaceUrl = "https://tencentarc-instantmesh.hf.space";
+  const imgInput = fileDataInput(cleanImg);
 
-  const imgMime = cleanImageBase64.startsWith("data:image/")
-    ? cleanImageBase64.split(";")[0].split(":")[1]
-    : "image/png";
-  const imgBase64 = cleanImageBase64.replace(/^data:image\/\w+;base64,/, "");
+  // Step 1 – preprocess (bg already removed)
+  log(genId, "InstantMesh → Step 1: preprocess");
+  const pre = await callGradioSSE(spaceUrl, "preprocess", [imgInput, false], 90_000);
+  const preprocessed = pre[0];
+  if (!preprocessed) throw new Error("preprocess: empty result");
 
-  // Gradio FileData shape expected by the space
-  const imageInput = {
-    path: "input.png",
-    url: `data:${imgMime};base64,${imgBase64}`,
-    orig_name: "input.png",
-    mime_type: imgMime,
-    meta: { _type: "gradio.FileData" },
-  };
+  // Step 2 – multi-view synthesis
+  log(genId, "InstantMesh → Step 2: generate_mvs");
+  const mvs = await callGradioSSE(spaceUrl, "generate_mvs", [preprocessed, 75, 42], 120_000);
+  const mvsImages = mvs[0];
 
-  // Step 1 – Preprocess (bg already removed, so do_remove_background = false)
-  console.log(`[InstantMesh] Step 1: preprocess`);
-  const preprocessOut = await callGradioSSE(spaceUrl, "preprocess", [imageInput, false], 60_000);
-  const preprocessedImg = preprocessOut[0];
-  if (!preprocessedImg) throw new Error("preprocess returned nothing");
-
-  // Step 2 – Generate multi-view synthesis
-  console.log(`[InstantMesh] Step 2: generate_mvs`);
-  const mvsOut = await callGradioSSE(spaceUrl, "generate_mvs", [preprocessedImg, 75, 42], 120_000);
-  const mvsImages = mvsOut[0];
-  if (!mvsImages) throw new Error("generate_mvs returned nothing");
-
-  // Step 3 – Reconstruct 3D mesh
-  console.log(`[InstantMesh] Step 3: make3d`);
-  const model3dOut = await callGradioSSE(spaceUrl, "make3d", [mvsImages], 180_000);
-  // make3d returns [video_path, model_path]
-  const glbOutput = model3dOut[1] ?? model3dOut[0];
-  const glbUrl = extractUrl(glbOutput, spaceUrl);
-
-  if (!glbUrl) throw new Error("make3d returned no file URL");
-
-  // Download the GLB and encode as data URL for storage
-  if (!glbUrl.startsWith("data:")) {
-    const dataUrl = await fetchGradioFile(glbUrl);
-    if (dataUrl) return dataUrl;
+  // Save multiview image for the UI to show
+  if (mvsImages) {
+    const mvsUrl = await resolveGradioUrl(mvsImages, spaceUrl);
+    if (mvsUrl) {
+      await markStep(genId, { multiviewImageUrl: mvsUrl });
+      log(genId, "InstantMesh → multiview saved");
+    }
   }
-  return glbUrl;
+
+  // Step 3 – reconstruct 3D mesh
+  log(genId, "InstantMesh → Step 3: make3d");
+  const mesh = await callGradioSSE(spaceUrl, "make3d", [mvsImages], 200_000);
+  // make3d returns [video_path, model_path]
+  const glbOut = mesh[1] ?? mesh[0];
+  const glbUrl = await resolveGradioUrl(glbOut, spaceUrl);
+  if (!glbUrl) throw new Error("make3d: no GLB URL");
+
+  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
+  log(genId, "InstantMesh → done ✓");
 }
 
-// ─── Full AI pipeline ─────────────────────────────────────────────────────
-async function runAiProcessing(generationId: number, imageBase64: string): Promise<void> {
-  console.log(`[gen ${generationId}] Starting AI pipeline`);
+// ─── Stable Fast 3D fallback (single-step, StabilityAI) ──────────────────────
 
+async function runStableFast3D(genId: number, cleanImg: string): Promise<void> {
+  const spaceUrl = "https://stabilityai-stable-fast-3d.hf.space";
+  log(genId, "StableFast3D → calling run");
+  const imgInput = fileDataInput(cleanImg);
+  // run(image, remesh_option, vertex_count, texture_size)
+  const out = await callGradioSSE(spaceUrl, "run", [imgInput, "none", -1, 1024], 180_000);
+  const glbOut = out[0];
+  const glbUrl = await resolveGradioUrl(glbOut, spaceUrl);
+  if (!glbUrl) throw new Error("StableFast3D: no GLB URL");
+
+  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
+  log(genId, "StableFast3D → done ✓");
+}
+
+// ─── TripoSR fallback (very reliable, single-step) ───────────────────────────
+
+async function runTripoSR(genId: number, cleanImg: string): Promise<void> {
+  const spaceUrl = "https://stabilityai-triposr.hf.space";
+  log(genId, "TripoSR → preprocess");
+  const imgInput = fileDataInput(cleanImg);
+
+  // Preprocess (bg already removed, ratio=0.85)
+  const pre = await callGradioSSE(spaceUrl, "preprocess", [imgInput, false, 0.85], 60_000);
+  const preprocessed = pre[0];
+  if (!preprocessed) throw new Error("TripoSR preprocess: empty");
+
+  log(genId, "TripoSR → generate");
+  // generate(preprocessed, mc_resolution, formats)
+  const out = await callGradioSSE(spaceUrl, "generate", [preprocessed, 256, ["glb"]], 120_000);
+  const glbOut = out[0];
+  const glbUrl = await resolveGradioUrl(glbOut, spaceUrl);
+  if (!glbUrl) throw new Error("TripoSR: no GLB URL");
+
+  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
+  log(genId, "TripoSR → done ✓");
+}
+
+// ─── Full AI pipeline ─────────────────────────────────────────────────────────
+
+async function runAiProcessing(genId: number, imageBase64: string): Promise<void> {
+  log(genId, "Starting AI pipeline");
   try {
     // 1. Mark as processing
-    await db
-      .update(generationsTable)
-      .set({ status: "processing" })
-      .where(eq(generationsTable.id, generationId));
+    await markStep(genId, { status: "processing" });
 
     // 2. Remove background
-    let processedImage = imageBase64;
+    let processedImg = imageBase64;
     try {
-      console.log(`[gen ${generationId}] Calling remove.bg`);
-      processedImage = await removeBackground(imageBase64);
-      console.log(`[gen ${generationId}] Background removed successfully`);
+      log(genId, "Calling remove.bg");
+      processedImg = await removeBackground(imageBase64);
+      // Immediately save the bg-removed image so the UI can show it
+      await markStep(genId, { previewImageUrl: processedImg });
+      log(genId, "remove.bg done ✓");
     } catch (bgErr) {
-      console.warn(`[gen ${generationId}] remove.bg failed, continuing with original:`, bgErr);
+      log(genId, `remove.bg failed, using original: ${bgErr}`);
     }
 
-    // 3. Generate 3D model
-    console.log(`[gen ${generationId}] Calling InstantMesh`);
-    const glbDataUrl = await generateInstantMesh(processedImage);
-    console.log(`[gen ${generationId}] InstantMesh succeeded`);
+    // 3. Try 3D generation with fallback chain
+    const pipelines = [
+      { name: "InstantMesh", fn: () => runInstantMesh(genId, processedImg) },
+      { name: "StableFast3D", fn: () => runStableFast3D(genId, processedImg) },
+      { name: "TripoSR", fn: () => runTripoSR(genId, processedImg) },
+    ];
 
-    // 4. Save results
-    await db
-      .update(generationsTable)
-      .set({
-        status: "completed",
-        modelGlbUrl: glbDataUrl,
-        previewImageUrl: processedImage,
-      })
-      .where(eq(generationsTable.id, generationId));
+    let lastError: unknown;
+    for (const pipeline of pipelines) {
+      try {
+        log(genId, `Trying ${pipeline.name}`);
+        await pipeline.fn();
+        return; // success — exit early
+      } catch (err) {
+        log(genId, `${pipeline.name} failed: ${err}`);
+        lastError = err;
+        // Reset multiview so UI doesn't show stale data
+        await markStep(genId, { multiviewImageUrl: null });
+      }
+    }
 
-    console.log(`[gen ${generationId}] Done ✓`);
+    throw lastError;
   } catch (err) {
-    console.error(`[gen ${generationId}] AI pipeline failed:`, err);
-    await db
-      .update(generationsTable)
-      .set({ status: "failed" })
-      .where(eq(generationsTable.id, generationId));
+    log(genId, `All pipelines failed: ${err}`);
+    await markStep(genId, { status: "failed" });
   }
 }
 
-// ─── Routes ───────────────────────────────────────────────────────────────
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
 router.get("/generations", requireAuth, async (req: any, res): Promise<void> => {
   const rows = await db
-    .select()
-    .from(generationsTable)
+    .select().from(generationsTable)
     .where(eq(generationsTable.userId, req.userId))
     .orderBy(desc(generationsTable.createdAt));
   res.json(ListGenerationsResponse.parse(rows));
@@ -259,128 +286,81 @@ router.get("/generations", requireAuth, async (req: any, res): Promise<void> => 
 
 router.post("/generations", requireAuth, async (req: any, res): Promise<void> => {
   const parsed = CreateGenerationBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
 
-  const [generation] = await db
-    .insert(generationsTable)
-    .values({
-      userId: req.userId,
-      title: parsed.data.title,
-      uploadedImageUrl: parsed.data.uploadedImageUrl,
-      furnitureType: parsed.data.furnitureType ?? null,
-      description: parsed.data.description ?? null,
-      status: "pending",
-    })
-    .returning();
+  const [gen] = await db.insert(generationsTable).values({
+    userId: req.userId,
+    title: parsed.data.title,
+    uploadedImageUrl: parsed.data.uploadedImageUrl,
+    furnitureType: parsed.data.furnitureType ?? null,
+    description: parsed.data.description ?? null,
+    status: "pending",
+  }).returning();
 
-  res.status(201).json(GetGenerationResponse.parse(generation));
+  res.status(201).json(GetGenerationResponse.parse(gen));
 });
 
 router.get("/generations/:id", requireAuth, async (req: any, res): Promise<void> => {
   const params = GetGenerationParams.safeParse({ id: req.params.id });
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [generation] = await db
-    .select()
-    .from(generationsTable)
-    .where(and(eq(generationsTable.id, params.data.id), eq(generationsTable.userId, req.userId)));
-
-  if (!generation) {
-    res.status(404).json({ error: "Generation not found" });
-    return;
-  }
-
-  res.json(GetGenerationResponse.parse(generation));
+  const [gen] = await db.select().from(generationsTable).where(
+    and(eq(generationsTable.id, params.data.id), eq(generationsTable.userId, req.userId))
+  );
+  if (!gen) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(GetGenerationResponse.parse(gen));
 });
 
 router.patch("/generations/:id", requireAuth, async (req: any, res): Promise<void> => {
   const params = UpdateGenerationParams.safeParse({ id: req.params.id });
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
-
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
   const parsed = UpdateGenerationBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
 
-  const updateData: Record<string, string | null> = {};
-  if (parsed.data.title != null) updateData.title = parsed.data.title;
-  if (parsed.data.description != null) updateData.description = parsed.data.description;
+  const update: Record<string, string | null> = {};
+  if (parsed.data.title != null) update.title = parsed.data.title;
+  if (parsed.data.description != null) update.description = parsed.data.description;
 
-  const [generation] = await db
-    .update(generationsTable)
-    .set(updateData)
+  const [gen] = await db.update(generationsTable).set(update)
     .where(and(eq(generationsTable.id, params.data.id), eq(generationsTable.userId, req.userId)))
     .returning();
-
-  if (!generation) {
-    res.status(404).json({ error: "Generation not found" });
-    return;
-  }
-
-  res.json(UpdateGenerationResponse.parse(generation));
+  if (!gen) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(UpdateGenerationResponse.parse(gen));
 });
 
 router.delete("/generations/:id", requireAuth, async (req: any, res): Promise<void> => {
   const params = DeleteGenerationParams.safeParse({ id: req.params.id });
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [generation] = await db
-    .delete(generationsTable)
+  const [gen] = await db.delete(generationsTable)
     .where(and(eq(generationsTable.id, params.data.id), eq(generationsTable.userId, req.userId)))
     .returning();
-
-  if (!generation) {
-    res.status(404).json({ error: "Generation not found" });
-    return;
-  }
-
+  if (!gen) { res.status(404).json({ error: "Not found" }); return; }
   res.sendStatus(204);
 });
 
 router.post("/generations/:id/process", requireAuth, async (req: any, res): Promise<void> => {
   const params = ProcessGenerationParams.safeParse({ id: req.params.id });
-  if (!params.success) {
-    res.status(400).json({ error: params.error.message });
-    return;
-  }
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
 
-  const [generation] = await db
-    .select()
-    .from(generationsTable)
-    .where(and(eq(generationsTable.id, params.data.id), eq(generationsTable.userId, req.userId)));
+  const [gen] = await db.select().from(generationsTable).where(
+    and(eq(generationsTable.id, params.data.id), eq(generationsTable.userId, req.userId))
+  );
+  if (!gen) { res.status(404).json({ error: "Not found" }); return; }
+  if (!gen.uploadedImageUrl) { res.status(400).json({ error: "No image to process" }); return; }
 
-  if (!generation) {
-    res.status(404).json({ error: "Generation not found" });
-    return;
-  }
+  // Reset intermediate fields for re-runs
+  await db.update(generationsTable).set({
+    status: "processing",
+    previewImageUrl: null,
+    multiviewImageUrl: null,
+    modelGlbUrl: null,
+  }).where(eq(generationsTable.id, gen.id));
 
-  if (!generation.uploadedImageUrl) {
-    res.status(400).json({ error: "No image to process" });
-    return;
-  }
+  // Fire-and-forget the AI pipeline
+  runAiProcessing(gen.id, gen.uploadedImageUrl);
 
-  // Kick off async — non-blocking
-  runAiProcessing(generation.id, generation.uploadedImageUrl);
-
-  const [updated] = await db
-    .update(generationsTable)
-    .set({ status: "processing" })
-    .where(eq(generationsTable.id, generation.id))
-    .returning();
-
+  const [updated] = await db.select().from(generationsTable).where(eq(generationsTable.id, gen.id));
   res.json(ProcessGenerationResponse.parse(updated));
 });
 

@@ -240,6 +240,8 @@ components:
           type: ["string", "null"]
         previewImageUrl:
           type: ["string", "null"]
+        multiviewImageUrl:
+          type: ["string", "null"]
         modelGlbUrl:
           type: ["string", "null"]
         modelObjUrl:

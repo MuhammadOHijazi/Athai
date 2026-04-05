@@ -9,6 +9,7 @@ export const generationsTable = pgTable("generations", {
   status: text("status").notNull().default("pending"),
   uploadedImageUrl: text("uploaded_image_url"),
   previewImageUrl: text("preview_image_url"),
+  multiviewImageUrl: text("multiview_image_url"),
   modelGlbUrl: text("model_glb_url"),
   modelObjUrl: text("model_obj_url"),
   modelUsdzUrl: text("model_usdz_url"),

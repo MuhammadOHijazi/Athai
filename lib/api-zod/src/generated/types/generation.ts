@@ -17,6 +17,8 @@ export interface Generation {
   /** @nullable */
   previewImageUrl?: string | null;
   /** @nullable */
+  multiviewImageUrl?: string | null;
+  /** @nullable */
   modelGlbUrl?: string | null;
   /** @nullable */
   modelObjUrl?: string | null;
