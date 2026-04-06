@@ -283,8 +283,7 @@ export default function ModelDetail() {
               className="mt-3 flex items-start gap-2 rounded-lg bg-amber-500/8 border border-amber-500/20 p-3">
               <Zap className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
               <p className="text-xs text-amber-300/90 leading-relaxed">
-                <span className="font-semibold">Textured preview mode</span> — HuggingFace 3D spaces are currently down.
-                Add a <span className="font-mono bg-amber-500/15 px-1 rounded">REPLICATE_API_TOKEN</span> secret in Replit to enable full 3D reconstruction.
+                <span className="font-semibold">Textured preview mode</span> — The 3D generation service is temporarily busy. Your model will be a flat textured preview until the service recovers and you re-generate.
               </p>
             </motion.div>
           )}

@@ -189,95 +189,23 @@ async function removeBackground(base64Image: string): Promise<string> {
   return `data:image/png;base64,${buf.toString("base64")}`;
 }
 
-// ─── Replicate predictions ────────────────────────────────────────────────────
+// ─── HF Gradio Spaces ─────────────────────────────────────────────────────────
 
-async function replicatePredict(
-  genId: number,
-  modelPath: string,
-  input: Record<string, unknown>,
+async function callGradioSSE(
+  spaceUrl: string,
+  apiName: string,
+  data: unknown[],
+  timeoutMs = 300_000,
+  sessionHash?: string,
 ): Promise<unknown[]> {
-  const token = process.env.REPLICATE_API_TOKEN;
-  if (!token) throw new Error("REPLICATE_API_TOKEN not set");
-  const headers = { Authorization: `Token ${token}`, "Content-Type": "application/json" };
-
-  const createRes = await fetch(`https://api.replicate.com/v1/models/${modelPath}/predictions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ input }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!createRes.ok) {
-    const t = await createRes.text();
-    throw new Error(`Replicate create [${modelPath}] ${createRes.status}: ${t.slice(0, 300)}`);
-  }
-  const pred = (await createRes.json()) as { id: string };
-  log(genId, `Replicate [${modelPath}] prediction: ${pred.id}`);
-
-  const deadline = Date.now() + 600_000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 8_000));
-    const poll = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, { headers, signal: AbortSignal.timeout(15_000) });
-    if (!poll.ok) throw new Error(`Replicate poll ${poll.status}`);
-    const data = (await poll.json()) as { status: string; output?: unknown[]; error?: string };
-    log(genId, `Replicate status: ${data.status}`);
-    if (data.status === "succeeded") return data.output ?? [];
-    if (data.status === "failed" || data.status === "canceled") throw new Error(`Replicate ${data.status}: ${data.error}`);
-  }
-  throw new Error(`Replicate timed out`);
-}
-
-async function runReplicateTripoSR(genId: number, cleanImg: string): Promise<void> {
-  log(genId, "Replicate TripoSR →");
-  const output = await replicatePredict(genId, "stability-ai/triposr", {
-    image: cleanImg,
-    do_remove_background: false,
-    foreground_ratio: 0.85,
-  });
-  const urls = (output ?? []) as string[];
-  log(genId, `TripoSR output: ${JSON.stringify(urls).slice(0, 200)}`);
-  const token = process.env.REPLICATE_API_TOKEN!;
-  const authH = { Authorization: `Token ${token}` };
-  const glbUrl = urls.find((u) => typeof u === "string" && u.toLowerCase().includes(".glb"));
-  const objUrl = urls.find((u) => typeof u === "string" && u.toLowerCase().includes(".obj"));
-  const meshUrl = glbUrl ?? objUrl ?? (typeof urls[0] === "string" ? urls[0] : null);
-  if (!meshUrl) throw new Error("TripoSR: no mesh URL");
-  const modelDataUrl = await downloadAsDataUrl(meshUrl, authH);
-  await markStep(genId, { status: "completed", modelGlbUrl: modelDataUrl });
-  log(genId, "Replicate TripoSR done ✓");
-}
-
-async function runReplicateInstantMesh(genId: number, cleanImg: string): Promise<void> {
-  log(genId, "Replicate InstantMesh →");
-  const output = await replicatePredict(genId, "camenduru/instantmesh", {
-    image_path: cleanImg,
-    export_mesh: true,
-  });
-  const urls = (output ?? []) as string[];
-  const token = process.env.REPLICATE_API_TOKEN!;
-  const authH = { Authorization: `Token ${token}` };
-  const meshUrl = urls.find((u) => typeof u === "string" && (u.includes(".glb") || u.includes(".obj"))) ?? urls[0];
-  if (!meshUrl || typeof meshUrl !== "string") throw new Error("InstantMesh: no mesh URL");
-  const imgUrl = urls.find((u) => typeof u === "string" && (u.includes(".png") || u.includes(".jpg")));
-  if (imgUrl) {
-    try {
-      const mvsUrl = await downloadAsDataUrl(imgUrl, authH);
-      await markStep(genId, { multiviewImageUrl: mvsUrl });
-    } catch { /* non-fatal */ }
-  }
-  const modelDataUrl = await downloadAsDataUrl(meshUrl, authH);
-  await markStep(genId, { status: "completed", modelGlbUrl: modelDataUrl });
-  log(genId, "Replicate InstantMesh done ✓");
-}
-
-// ─── HF Gradio Spaces (fallback) ─────────────────────────────────────────────
-
-async function callGradioSSE(spaceUrl: string, apiName: string, data: unknown[], timeoutMs = 300_000): Promise<unknown[]> {
   const hfToken = process.env.HF_TOKEN;
   const authH: Record<string, string> = hfToken ? { Authorization: `Bearer ${hfToken}` } : {};
+  const body: Record<string, unknown> = { data };
+  if (sessionHash) body.session_hash = sessionHash;
   const submitRes = await fetch(`${spaceUrl}/call/${apiName}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authH },
-    body: JSON.stringify({ data }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
   if (!submitRes.ok) {
@@ -321,29 +249,22 @@ async function resolveGradioFile(output: unknown, spaceUrl: string): Promise<str
 }
 
 async function runHfInstantMesh(genId: number, cleanImg: string): Promise<void> {
-  const url = "https://tencentarc-instantmesh.hf.space";
+  const url = "https://sigmitch-instantmesh.hf.space";
+  const sessionHash = Math.random().toString(36).slice(2, 18);
   const img = fileDataInput(cleanImg);
-  log(genId, "HF InstantMesh → preprocess");
-  const pre = await callGradioSSE(url, "preprocess", [img, false], 90_000);
-  log(genId, "HF InstantMesh → generate_mvs");
-  const mvs = await callGradioSSE(url, "generate_mvs", [pre[0], 75, 42], 120_000);
+
+  log(genId, "SIGMitch/InstantMesh → generate_mvs");
+  const mvs = await callGradioSSE(url, "generate_mvs", [img, 75, 42], 180_000, sessionHash);
   const mvsUrl = await resolveGradioFile(mvs[0], url);
   if (mvsUrl) await markStep(genId, { multiviewImageUrl: mvsUrl });
-  log(genId, "HF InstantMesh → make3d");
-  const mesh = await callGradioSSE(url, "make3d", [mvs[0]], 200_000);
-  const glbUrl = await resolveGradioFile(mesh[1] ?? mesh[0], url);
-  if (!glbUrl) throw new Error("make3d: no GLB");
-  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
-}
 
-async function runHfTripoSR(genId: number, cleanImg: string): Promise<void> {
-  const url = "https://stabilityai-triposr.hf.space";
-  const img = fileDataInput(cleanImg);
-  const pre = await callGradioSSE(url, "preprocess", [img, false, 0.85], 60_000);
-  const out = await callGradioSSE(url, "generate", [pre[0], 256, ["glb"]], 120_000);
-  const glbUrl = await resolveGradioFile(out[0], url);
-  if (!glbUrl) throw new Error("HF TripoSR: no GLB");
+  log(genId, "SIGMitch/InstantMesh → make3d");
+  // make3d takes NO inputs — state flows from generate_mvs via session_hash
+  const mesh = await callGradioSSE(url, "make3d", [], 300_000, sessionHash);
+  const glbUrl = await resolveGradioFile(mesh[1] ?? mesh[0], url);
+  if (!glbUrl) throw new Error("make3d: no GLB returned");
   await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
+  log(genId, "SIGMitch/InstantMesh done ✓");
 }
 
 // ─── Full AI pipeline ─────────────────────────────────────────────────────────
@@ -364,22 +285,11 @@ async function runAiProcessing(genId: number, imageBase64: string): Promise<void
       log(genId, `remove.bg failed, using original: ${err}`);
     }
 
-    // Step 2: 3D generation — try pipelines in order
-    const hasReplicate = !!process.env.REPLICATE_API_TOKEN;
-
-    if (!hasReplicate) {
-      log(genId, "⚠️  REPLICATE_API_TOKEN not set — HF Spaces currently unreliable, will use fallback");
-    }
-
+    // Step 2: 3D generation — SIGMitch/InstantMesh with offline GLTF fallback
     const pipelines: { name: string; fn: () => Promise<void> }[] = [
-      ...(hasReplicate ? [
-        { name: "Replicate/TripoSR",     fn: () => runReplicateTripoSR(genId, cleanImg) },
-        { name: "Replicate/InstantMesh", fn: () => runReplicateInstantMesh(genId, cleanImg) },
-      ] : []),
-      { name: "HF/InstantMesh", fn: () => runHfInstantMesh(genId, cleanImg) },
-      { name: "HF/TripoSR",     fn: () => runHfTripoSR(genId, cleanImg) },
+      { name: "HF/SIGMitch-InstantMesh", fn: () => runHfInstantMesh(genId, cleanImg) },
       // Always-available fallback: textured GLTF plane from the bg-removed image
-      { name: "Fallback/GLTF",  fn: () => runFallbackGltf(genId, cleanImg) },
+      { name: "Fallback/GLTF",           fn: () => runFallbackGltf(genId, cleanImg) },
     ];
 
     for (const p of pipelines) {
