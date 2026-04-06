@@ -233,7 +233,7 @@ export default function ModelDetail() {
     { step: 2, label: "Background Removed",     sublabel: "remove.bg API",          status: s2, imageUrl: generation.previewImageUrl,  icon: ImageIcon },
     { step: 3, label: "Multi-View Synthesis",   sublabel: "InstantMesh MVS",        status: s3, imageUrl: generation.multiviewImageUrl,icon: Layers    },
     { step: 4, label: isFallbackModel ? "Textured 3D Preview" : "3D Model Ready",
-                  sublabel: isFallbackModel ? "Offline fallback (add Replicate for full 3D)" : "GLB / OBJ / USDZ",
+                  sublabel: isFallbackModel ? "Offline fallback (service temporarily busy)" : "GLB / OBJ / USDZ",
                   status: s4, imageUrl: null, icon: isFallbackModel ? Zap : Sparkles },
   ];
 
