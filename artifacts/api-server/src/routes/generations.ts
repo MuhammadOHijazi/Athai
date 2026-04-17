@@ -363,21 +363,22 @@ async function callGradioSSE(
     throw new PipelineError("HF_SUBMIT_TIMEOUT", `Unable to submit ${apiName}`);
   }
 
+  // ZeroGPU keeps the SSE stream open until the job finishes (can be 5+ min in queue).
+  // Use the full remaining timeout for each stream fetch so we don't prematurely cut it.
   const startedAt = Date.now();
-  let intervalMs = providerConfig.hfPollBaseMs;
   let pollAttempt = 0;
   while (Date.now() - startedAt < timeoutMs) {
     pollAttempt += 1;
+    const remainingMs = Math.max(15_000, timeoutMs - (Date.now() - startedAt));
     try {
       const pollRes = await fetch(`${spaceUrl}/call/${apiName}/${eventId}`, {
         headers: authH,
-        signal: AbortSignal.timeout(Math.min(intervalMs + 5_000, 30_000)),
+        signal: AbortSignal.timeout(remainingMs),
       });
       if (!pollRes.ok) {
         if (pollRes.status >= 500) {
           recordTrace(genId, { stage: "hf_poll", status: "info", message: `Transient poll ${pollRes.status}; retrying` });
-          await new Promise((r) => setTimeout(r, intervalMs));
-          intervalMs = Math.min(providerConfig.hfPollMaxMs, Math.round(intervalMs * 1.4));
+          await new Promise((r) => setTimeout(r, providerConfig.hfPollBaseMs));
           continue;
         }
         const txt = await pollRes.text();
@@ -388,16 +389,19 @@ async function callGradioSSE(
       if (parsed.length > 0) {
         return parsed;
       }
+      // Empty response (only heartbeats) — ZeroGPU may still be queueing, retry
+      if (pollAttempt % 3 === 0) {
+        recordTrace(genId, { stage: "hf_poll", status: "info", message: `Still waiting for ${apiName} (attempt ${pollAttempt})` });
+      }
     } catch (err) {
-      const isTimeout = err instanceof Error && err.name === "TimeoutError";
-      if (!isTimeout) throw err;
-      recordTrace(genId, { stage: "hf_poll", status: "info", message: `Poll timeout on attempt ${pollAttempt}; backing off` });
+      // Retry on timeouts AND connection resets (TypeError: terminated from ZeroGPU queue drops)
+      const isRetryable =
+        (err instanceof Error && err.name === "TimeoutError") ||
+        (err instanceof TypeError && (err.message.includes("terminated") || err.message.includes("network")));
+      if (!isRetryable) throw err;
+      recordTrace(genId, { stage: "hf_poll", status: "info", message: `Poll interrupted on attempt ${pollAttempt}: ${err.message}; retrying` });
+      await new Promise((r) => setTimeout(r, providerConfig.hfPollBaseMs));
     }
-    if (pollAttempt % 3 === 0) {
-      recordTrace(genId, { stage: "hf_poll", status: "info", message: `Still waiting for ${apiName}` });
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-    intervalMs = Math.min(providerConfig.hfPollMaxMs, Math.round(intervalMs * 1.2));
   }
 
   throw new PipelineError("HF_QUEUE_TIMEOUT", `Gradio [${apiName}] exceeded timeout`);
@@ -444,21 +448,14 @@ async function runHfSigmitchInstantMesh(genId: number, cleanImg: string): Promis
   const img = fileDataInput(cleanImg);
   recordTrace(genId, { stage: "provider_select", status: "info", message: `Provider ${providerConfig.modelProviderPrimary} (${providerConfig.hfSpaceIdPrimary}) session=${sessionHash}` });
 
-  log(genId, "SIGMitch/InstantMesh → check_input_image");
-  const check = await callGradioSSE(genId, url, "check_input_image", [img], providerConfig.hfTimeoutJobMs, sessionHash);
-  recordTrace(genId, { stage: "sigmitch_check_input_image", status: "info", message: `Output items: ${check.length}` });
-
-  log(genId, "SIGMitch/InstantMesh → preprocess");
-  const pre = await callGradioSSE(genId, url, "preprocess", [img, false], providerConfig.hfTimeoutJobMs, sessionHash);
-  const processedInput = ensureOutput("preprocess", pre[0]);
-  recordTrace(genId, { stage: "sigmitch_preprocess", status: "info", message: "Preprocess completed" });
-
+  // Match the working notebook approach exactly:
+  // go straight to generate_mvs with the bg-removed image (no check_input_image / preprocess)
   log(genId, "SIGMitch/InstantMesh → generate_mvs");
   const mvs = await callGradioSSE(
     genId,
     url,
     "generate_mvs",
-    [processedInput, providerConfig.sigmitchSampleSteps, providerConfig.sigmitchSampleSeed],
+    [img, providerConfig.sigmitchSampleSteps, providerConfig.sigmitchSampleSeed],
     providerConfig.hfTimeoutJobMs,
     sessionHash,
   );

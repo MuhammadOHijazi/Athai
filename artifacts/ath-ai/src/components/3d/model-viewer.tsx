@@ -68,7 +68,12 @@ function ModelAsset({ url }: { url: string }) {
 export function ModelViewer({ glbUrl }: { glbUrl: string | null }) {
   return (
     <div className="w-full h-full bg-[#111] rounded-lg overflow-hidden relative">
-      <Canvas shadows dpr={[1, 2]} camera={{ position: [3, 2, 3], fov: 45 }}>
+      <Canvas
+        shadows
+        dpr={[1, 1.5]}
+        camera={{ position: [3, 2, 3], fov: 45 }}
+        gl={{ powerPreference: "high-performance", antialias: true, preserveDrawingBuffer: false }}
+      >
         <Suspense fallback={null}>
           <Environment preset="city" />
           <ambientLight intensity={0.5} />
