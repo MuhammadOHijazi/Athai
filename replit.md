@@ -56,11 +56,33 @@ Protected:
 - `GET /api/dashboard/summary` — Dashboard stats
 - `GET /api/dashboard/recent` — Recent generations
 
+### AI Pipeline
+
+The 3D generation pipeline runs server-side in `artifacts/api-server/src/routes/generations.ts`:
+
+1. **Background removal** — calls remove.bg API (REMOVE_BG_API_KEY) to strip the furniture background
+2. **InstantMesh 3D generation** — calls the `SIGMitch/InstantMesh` HuggingFace Space via a **Python subprocess bridge**
+   - Bridge script: `artifacts/api-server/src/instantmesh_bridge.py`
+   - Uses `gradio_client` Python package (2.4.1), which maintains WebSocket session state internally
+   - This is required because `make3d` depends on numpy array state from `generate_mvs` which cannot be passed via REST JSON
+   - The bridge script receives base64 image on stdin and outputs JSON (multiview PNG + OBJ + GLB as base64 data URLs) on stdout
+   - Python 3.11 + `gradio_client` installed as a Replit module
+3. Outputs stored in the `generations` DB table as data URLs
+
+Environment variables:
+- `HF_TOKEN` — HuggingFace API token for the InstantMesh space
+- `REMOVE_BG_API_KEY` — remove.bg API key
+- `SESSION_SECRET` — Express session secret
+- `HF_TIMEOUT_JOB_MS` — Pipeline timeout in ms (default: 720000 = 12 min)
+- `SIGMITCH_SAMPLE_STEPS` — MVS steps (default: 75)
+- `SIGMITCH_SAMPLE_SEED` — MVS seed (default: 42)
+
 ## Stack
 
 - **Monorepo tool**: pnpm workspaces
 - **Node.js version**: 24
 - **Package manager**: pnpm
+- **Python**: 3.11 (for gradio_client bridge subprocess)
 - **TypeScript version**: 5.9
 - **API framework**: Express 5
 - **Database**: PostgreSQL + Drizzle ORM

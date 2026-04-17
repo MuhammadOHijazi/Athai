@@ -449,9 +449,8 @@ async function runHfSigmitchInstantMesh(genId: number, cleanImg: string): Promis
   recordTrace(genId, { stage: "provider_select", status: "info", message: `Provider python-bridge (SIGMitch/InstantMesh)` });
   log(genId, "SIGMitch/InstantMesh → python bridge");
 
-  // Bridge script lives next to this source file; use package root to resolve it
-  // (works in both dev ts-node and compiled ESM output)
-  const bridgePath = path.resolve(process.cwd(), "artifacts/api-server/src/instantmesh_bridge.py");
+  // process.cwd() is artifacts/api-server/ in both dev and production
+  const bridgePath = path.resolve(process.cwd(), "src/instantmesh_bridge.py");
   const timeoutMs = providerConfig.hfTimeoutJobMs;
 
   const result = await new Promise<{ multiviewImageB64?: string; modelObjB64?: string; modelGlbB64?: string; error?: string }>(
