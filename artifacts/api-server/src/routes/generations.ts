@@ -654,6 +654,8 @@ router.post("/generations/:id/process", requireAuth, async (req: any, res): Prom
     previewImageUrl: null,
     multiviewImageUrl: null,
     modelGlbUrl: null,
+    modelObjUrl: null,
+    modelUsdzUrl: null,
   }).where(eq(generationsTable.id, gen.id));
 
   // Fire-and-forget

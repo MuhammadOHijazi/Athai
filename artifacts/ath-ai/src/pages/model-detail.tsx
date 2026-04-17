@@ -221,6 +221,12 @@ export default function ModelDetail() {
   const isComplete = generation.status === "completed";
   const isFailed   = generation.status === "failed";
   const isWorking  = generation.status === "pending" || generation.status === "processing";
+  const canRetry   = !isWorking && !processGeneration.isPending;
+
+  async function handleRetry() {
+    await processGeneration.mutateAsync({ id });
+    queryClient.invalidateQueries({ queryKey: getGetGenerationQueryKey(id) });
+  }
 
   const [s1, s2, s3, s4] = inferStepStatuses(generation);
 
@@ -280,12 +286,22 @@ export default function ModelDetail() {
           </div>
           {isFallbackModel && (
             <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-              className="mt-3 flex items-start gap-2 rounded-lg bg-amber-500/8 border border-amber-500/20 p-3">
-              <Zap className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-              <p className="text-xs text-amber-300/90 leading-relaxed">
-                <span className="font-semibold">Textured preview mode</span> — SIGMitch generation failed or timed out for this run.
-                Verify <span className="font-mono bg-amber-500/15 px-1 rounded">HF_TOKEN</span> in Replit Secrets for full 3D reconstruction.
-              </p>
+              className="mt-3 flex items-start justify-between gap-3 rounded-lg bg-amber-500/8 border border-amber-500/20 p-3">
+              <div className="flex items-start gap-2 min-w-0">
+                <Zap className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-300/90 leading-relaxed">
+                  <span className="font-semibold">Textured preview mode</span> — the HF 3D pipeline timed out or hit an error this run.
+                  Try again — ZeroGPU queue clears quickly during off-peak hours.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                className="shrink-0 h-7 px-3 text-xs border-amber-500/30 text-amber-300 hover:bg-amber-500/10"
+                disabled={!canRetry}
+                onClick={handleRetry}>
+                {processGeneration.isPending
+                  ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Retrying…</>
+                  : <><RefreshCw className="h-3 w-3 mr-1" />Retry</>}
+              </Button>
             </motion.div>
           )}
         </div>
@@ -300,15 +316,11 @@ export default function ModelDetail() {
                 </div>
                 <p className="font-semibold text-lg mb-2">Generation failed</p>
                 <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">
-                  Something went wrong at every stage of the pipeline. Check the server logs for details.
+                  Something went wrong at every stage of the pipeline. Hit retry to try again — ZeroGPU queue may clear up quickly.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-3 mt-6">
                   <Button className="gap-2 bg-foreground text-background hover:bg-foreground/90"
-                    disabled={processGeneration.isPending}
-                    onClick={async () => {
-                      await processGeneration.mutateAsync({ id });
-                      queryClient.invalidateQueries({ queryKey: getGetGenerationQueryKey(id) });
-                    }}>
+                    disabled={!canRetry} onClick={handleRetry}>
                     {processGeneration.isPending
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Retrying…</>
                       : <><RefreshCw className="h-4 w-4" /> Retry generation</>
@@ -380,7 +392,7 @@ export default function ModelDetail() {
               <CardContent className="p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Export Assets</h3>
-                  {!isComplete && <span className="text-[10px] text-muted-foreground">Ready after generation</span>}
+                  {!isComplete && !isWorking && <span className="text-[10px] text-muted-foreground">Ready after generation</span>}
                 </div>
                 <div className="space-y-2">
                   <ExportButton label={isFallbackModel ? "3D Preview" : "3D Model"} ext={isFallbackModel ? "gltf" : "glb"}
@@ -388,12 +400,22 @@ export default function ModelDetail() {
                   <ExportButton label="Wavefront" ext="OBJ" url={generation.modelObjUrl} isComplete={isComplete} />
                   <ExportButton label="AR Quick Look" ext="USDZ" url={generation.modelUsdzUrl} isComplete={isComplete} />
                 </div>
-                {isComplete && (
+                {isComplete && !isFallbackModel && (
                   <motion.p initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
                     className="flex items-center gap-1.5 text-xs text-green-400">
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     Saved to your account
                   </motion.p>
+                )}
+                {!isWorking && (
+                  <div className="pt-1 border-t border-border/40">
+                    <Button variant="ghost" size="sm" className="w-full justify-center gap-2 text-muted-foreground hover:text-foreground"
+                      disabled={!canRetry} onClick={handleRetry}>
+                      {processGeneration.isPending
+                        ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Retrying…</>
+                        : <><RefreshCw className="h-3.5 w-3.5" /> {isFailed ? "Retry generation" : "Re-run pipeline"}</>}
+                    </Button>
+                  </div>
                 )}
               </CardContent>
             </Card>
