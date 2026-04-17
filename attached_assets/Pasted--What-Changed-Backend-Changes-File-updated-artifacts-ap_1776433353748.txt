@@ -1,0 +1,106 @@
+ What Changed
+Backend Changes
+File updated: artifacts/api-server/src/routes/generations.ts
+
+A. Provider architecture moved to HF SIGMitch primary
+Added env-driven provider config for Hugging Face SIGMitch:
+MODEL_PROVIDER_PRIMARY
+HF_SPACE_ID_PRIMARY
+HF_SPACE_BASE_URL_PRIMARY
+HF_TIMEOUT_SUBMIT_MS
+HF_TIMEOUT_JOB_MS
+HF_RETRY_MAX
+HF_POLL_BASE_MS
+HF_POLL_MAX_MS
+SIGMITCH_SAMPLE_STEPS
+SIGMITCH_SAMPLE_SEED
+B. Implemented explicit SIGMitch Gradio flow
+Pipeline calls now follow SIGMitch API contract:
+
+/check_input_image
+/preprocess
+/generate_mvs
+/make3d
+C. Hardened HF queue behavior for ZeroGPU
+Submit timeout handling
+Retry/backoff logic for transient failures
+Queue polling with adaptive intervals
+Failure classification for better observability
+D. Artifact normalization
+Robust output parsing from Gradio responses
+Resolves file paths/URLs safely
+Prioritizes GLB output from /make3d with OBJ fallback where available
+E. Added structured debug tracing
+Per-generation in-memory trace events
+New endpoint:
+GET /api/generations/:id/debug
+Keeps existing SSE progress stream in place:
+GET /api/generations/:id/stream
+F. Removed Replicate integration completely
+Deleted Replicate pipeline code and usage
+Removed REPLICATE_API_TOKEN dependency from execution flow
+Frontend Changes
+File updated: artifacts/ath-ai/src/pages/model-detail.tsx
+
+Updated fallback messaging to HF-only mode
+Removed all references to Replicate from user-facing text
+Updated guidance to only require HF_TOKEN for full 3D path
+Clarified status copy for HF queue-aware generation stage
+3) Fallback Behavior (Current)
+Final processing behavior is now:
+
+Primary: HF SIGMitch/InstantMesh
+If HF fails/times out: textured GLTF offline fallback
+No Replicate step exists now.
+
+4) Secrets Required on Replit
+Required
+HF_TOKEN
+REMOVE_BG_API_KEY
+No longer required
+REPLICATE_API_TOKEN (removed from active flow)
+5) Pull / Sync Instructions for Replit
+If Replit tracks GitHub main, ensure it is synced to latest commit:
+
+Target commit: 8370e3a
+Pull latest main and redeploy/restart services.
+If manual shell is available in Replit:
+
+git fetch origin
+git checkout main
+git pull origin main
+Restart deployment/services
+6) Validation Checklist for Replit Team
+Functional Validation
+Create a new generation from UI.
+Confirm processing starts and progresses.
+Confirm generation completes with model output.
+Open model detail page and verify 3D render loads.
+Failure-Path Validation
+Simulate HF failure/timeout.
+Confirm system falls back to textured GLTF mode.
+Confirm UI message reflects HF-only fallback behavior.
+API Validation
+Check GET /api/healthz returns healthy.
+During/after generation, inspect:
+GET /api/generations/:id/stream
+GET /api/generations/:id/debug
+Confirm trace includes HF stages and failure reason when applicable.
+7) Known Notes / Constraints
+ZeroGPU queues can be slow; this is now handled with retries/backoff and longer queue-aware behavior.
+Some local IDE lint errors previously seen were environment/package-resolution related (missing local pnpm and module resolution), not blockers for pushed runtime code.
+Windows line-ending warnings (LF/CRLF) appeared during commit but do not change runtime behavior.
+8) Commit Details
+Commit hash: 8370e3a
+Message: Switch 3D generation pipeline to HF-only SIGMitch flow.
+Files changed:
+artifacts/api-server/src/routes/generations.ts
+artifacts/ath-ai/src/pages/model-detail.tsx
+9) Requested Action from Replit Team
+Please:
+
+Pull latest main including commit 8370e3a.
+Ensure HF_TOKEN and REMOVE_BG_API_KEY are set in deployment secrets.
+Redeploy services.
+Run the validation checklist above.
+Share logs from /api/generations/:id/debug if any generation still fails.
