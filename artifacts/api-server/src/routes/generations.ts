@@ -1,6 +1,8 @@
 import { Router, type IRouter, type Response } from "express";
 import { eq, and, desc } from "drizzle-orm";
 import { getAuth } from "@clerk/express";
+import { spawn } from "child_process";
+import path from "path";
 import { db, generationsTable } from "@workspace/db";
 import {
   CreateGenerationBody,
@@ -36,6 +38,7 @@ type FailureCode =
   | "HF_QUEUE_TIMEOUT"
   | "HF_SCHEMA_MISMATCH"
   | "HF_FILE_RESOLVE_FAILED"
+  | "HF_BRIDGE_FAILED"
   | "REMOVE_BG_FAILED";
 
 class PipelineError extends Error {
@@ -441,38 +444,90 @@ function ensureOutput(stage: string, value: unknown): unknown {
   return value;
 }
 
+/** Run the full InstantMesh pipeline via a Python subprocess (gradio_client). */
 async function runHfSigmitchInstantMesh(genId: number, cleanImg: string): Promise<void> {
-  const url = providerConfig.hfSpaceBaseUrlPrimary;
-  // session_hash links the stateful generate_mvs → make3d calls on the Gradio server
-  const sessionHash = Math.random().toString(36).slice(2, 18);
-  const img = fileDataInput(cleanImg);
-  recordTrace(genId, { stage: "provider_select", status: "info", message: `Provider ${providerConfig.modelProviderPrimary} (${providerConfig.hfSpaceIdPrimary}) session=${sessionHash}` });
+  recordTrace(genId, { stage: "provider_select", status: "info", message: `Provider python-bridge (SIGMitch/InstantMesh)` });
+  log(genId, "SIGMitch/InstantMesh → python bridge");
 
-  // Match the working notebook approach exactly:
-  // go straight to generate_mvs with the bg-removed image (no check_input_image / preprocess)
-  log(genId, "SIGMitch/InstantMesh → generate_mvs");
-  const mvs = await callGradioSSE(
-    genId,
-    url,
-    "generate_mvs",
-    [img, providerConfig.sigmitchSampleSteps, providerConfig.sigmitchSampleSeed],
-    providerConfig.hfTimeoutJobMs,
-    sessionHash,
+  // Bridge script lives next to this source file; use package root to resolve it
+  // (works in both dev ts-node and compiled ESM output)
+  const bridgePath = path.resolve(process.cwd(), "artifacts/api-server/src/instantmesh_bridge.py");
+  const timeoutMs = providerConfig.hfTimeoutJobMs;
+
+  const result = await new Promise<{ multiviewImageB64?: string; modelObjB64?: string; modelGlbB64?: string; error?: string }>(
+    (resolve, reject) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HF_SPACE_ID: providerConfig.hfSpaceIdPrimary,
+        SIGMITCH_SAMPLE_STEPS: String(providerConfig.sigmitchSampleSteps),
+        SIGMITCH_SAMPLE_SEED: String(providerConfig.sigmitchSampleSeed),
+      };
+
+      const proc = spawn("python3", [bridgePath], { env });
+
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+      proc.stderr.on("data", (chunk: Buffer) => {
+        const line = chunk.toString();
+        stderr += line;
+        // Forward bridge progress lines to trace
+        for (const l of line.split("\n")) {
+          if (l.trim()) log(genId, `[bridge] ${l.trim()}`);
+        }
+      });
+
+      const timer = setTimeout(() => {
+        proc.kill("SIGTERM");
+        reject(new PipelineError("HF_QUEUE_TIMEOUT", `Python bridge exceeded ${timeoutMs}ms timeout`));
+      }, timeoutMs);
+
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0 && !stdout.trim()) {
+          reject(new PipelineError("HF_BRIDGE_FAILED", `Python bridge exited ${code}: ${stderr.slice(-400)}`));
+          return;
+        }
+        try {
+          const lines = stdout.trim().split("\n");
+          const jsonLine = lines.filter((l) => l.startsWith("{")).pop() ?? lines[lines.length - 1];
+          resolve(JSON.parse(jsonLine));
+        } catch (e) {
+          reject(new PipelineError("HF_BRIDGE_FAILED", `Could not parse bridge output: ${stdout.slice(-400)}`));
+        }
+      });
+
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        reject(new PipelineError("HF_BRIDGE_FAILED", `Could not spawn python3: ${err.message}`));
+      });
+
+      // Write base64 image to stdin and close
+      const pureB64 = cleanImg.replace(/^data:image\/\w+;base64,/, "");
+      proc.stdin.write(pureB64, "utf8");
+      proc.stdin.end();
+    }
   );
-  const mvsOutput = ensureOutput("generate_mvs", mvs[0]);
-  const mvsUrl = await resolveGradioFile(mvsOutput, url);
-  if (mvsUrl) await markStep(genId, { multiviewImageUrl: mvsUrl });
-  recordTrace(genId, { stage: "sigmitch_generate_mvs", status: "info", message: "Multi-view generation completed" });
 
-  log(genId, "SIGMitch/InstantMesh → make3d");
-  // make3d takes NO inputs — state flows from generate_mvs via session_hash
-  const mesh = await callGradioSSE(genId, url, "make3d", [], providerConfig.hfTimeoutJobMs, sessionHash);
-  const objUrl = await resolveGradioFile(mesh[0], url);
-  const glbUrl = await resolveGradioFile(mesh[1] ?? mesh[0], url);
-  if (!glbUrl) {
-    throw new PipelineError("HF_FILE_RESOLVE_FAILED", "make3d: no GLB artifact");
+  if (result.error) {
+    throw new PipelineError("HF_BRIDGE_FAILED", result.error);
   }
-  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl, modelObjUrl: objUrl ?? null });
+
+  if (result.multiviewImageB64) {
+    await markStep(genId, { multiviewImageUrl: result.multiviewImageB64 });
+    recordTrace(genId, { stage: "sigmitch_generate_mvs", status: "info", message: "Multi-view generation completed" });
+  }
+
+  if (!result.modelGlbB64) {
+    throw new PipelineError("HF_FILE_RESOLVE_FAILED", "make3d: no GLB artifact from bridge");
+  }
+
+  await markStep(genId, {
+    status: "completed",
+    modelGlbUrl: result.modelGlbB64,
+    modelObjUrl: result.modelObjB64 ?? null,
+  });
   recordTrace(genId, { stage: "sigmitch_make3d", status: "info", message: "SIGMitch returned mesh artifacts" });
   log(genId, "SIGMitch/InstantMesh done ✓");
 }

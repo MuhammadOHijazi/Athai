@@ -69,7 +69,7 @@ export function ModelViewer({ glbUrl }: { glbUrl: string | null }) {
   return (
     <div className="w-full h-full bg-[#111] rounded-lg overflow-hidden relative">
       <Canvas
-        shadows
+        shadows={{ type: THREE.PCFShadowMap }}
         dpr={[1, 1.5]}
         camera={{ position: [3, 2, 3], fov: 45 }}
         gl={{ powerPreference: "high-performance", antialias: true, preserveDrawingBuffer: false }}
