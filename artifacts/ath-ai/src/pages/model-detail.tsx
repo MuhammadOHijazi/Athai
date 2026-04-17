@@ -233,7 +233,7 @@ export default function ModelDetail() {
     { step: 2, label: "Background Removed",     sublabel: "remove.bg API",          status: s2, imageUrl: generation.previewImageUrl,  icon: ImageIcon },
     { step: 3, label: "Multi-View Synthesis",   sublabel: "InstantMesh MVS",        status: s3, imageUrl: generation.multiviewImageUrl,icon: Layers    },
     { step: 4, label: isFallbackModel ? "Textured 3D Preview" : "3D Model Ready",
-                  sublabel: isFallbackModel ? "Offline fallback (add Replicate for full 3D)" : "GLB / OBJ / USDZ",
+                  sublabel: isFallbackModel ? "Offline fallback (HF-only mode)" : "GLB / OBJ / USDZ",
                   status: s4, imageUrl: null, icon: isFallbackModel ? Zap : Sparkles },
   ];
 
@@ -283,8 +283,8 @@ export default function ModelDetail() {
               className="mt-3 flex items-start gap-2 rounded-lg bg-amber-500/8 border border-amber-500/20 p-3">
               <Zap className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
               <p className="text-xs text-amber-300/90 leading-relaxed">
-                <span className="font-semibold">Textured preview mode</span> — HuggingFace 3D spaces are currently down.
-                Add a <span className="font-mono bg-amber-500/15 px-1 rounded">REPLICATE_API_TOKEN</span> secret in Replit to enable full 3D reconstruction.
+                <span className="font-semibold">Textured preview mode</span> — SIGMitch generation failed or timed out for this run.
+                Verify <span className="font-mono bg-amber-500/15 px-1 rounded">HF_TOKEN</span> in Replit Secrets for full 3D reconstruction.
               </p>
             </motion.div>
           )}
@@ -330,7 +330,7 @@ export default function ModelDetail() {
                     </div>
                     <h3 className="text-lg font-semibold mb-1">
                       {s2 === "active" ? "Removing background…" :
-                       s3 === "active" ? "Generating multi-view…" :
+                       s3 === "active" ? "Generating multi-view (HF queue aware)..." :
                        "Building 3D mesh…"}
                     </h3>
                     <p className="text-sm text-white/50 max-w-xs text-center">

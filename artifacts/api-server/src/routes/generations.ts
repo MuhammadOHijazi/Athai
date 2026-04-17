@@ -16,6 +16,49 @@ import {
 } from "@workspace/api-zod";
 
 const router: IRouter = Router();
+const APP_JSON = "application/json";
+
+const providerConfig = {
+  modelProviderPrimary: process.env.MODEL_PROVIDER_PRIMARY ?? "hf_sigmitch",
+  hfSpaceIdPrimary: process.env.HF_SPACE_ID_PRIMARY ?? "SIGMitch/InstantMesh",
+  hfSpaceBaseUrlPrimary: (process.env.HF_SPACE_BASE_URL_PRIMARY ?? "https://sigmitch-instantmesh.hf.space").replace(/\/$/, ""),
+  hfTimeoutSubmitMs: Number(process.env.HF_TIMEOUT_SUBMIT_MS ?? 30_000),
+  hfTimeoutJobMs: Number(process.env.HF_TIMEOUT_JOB_MS ?? 12 * 60_000),
+  hfRetryMax: Number(process.env.HF_RETRY_MAX ?? 3),
+  hfPollBaseMs: Number(process.env.HF_POLL_BASE_MS ?? 3_000),
+  hfPollMaxMs: Number(process.env.HF_POLL_MAX_MS ?? 15_000),
+  sigmitchSampleSteps: Number(process.env.SIGMITCH_SAMPLE_STEPS ?? 75),
+  sigmitchSampleSeed: Number(process.env.SIGMITCH_SAMPLE_SEED ?? 42),
+};
+
+type FailureCode =
+  | "HF_SUBMIT_TIMEOUT"
+  | "HF_QUEUE_TIMEOUT"
+  | "HF_SCHEMA_MISMATCH"
+  | "HF_FILE_RESOLVE_FAILED"
+  | "REMOVE_BG_FAILED";
+
+class PipelineError extends Error {
+  constructor(
+    public readonly code: FailureCode,
+    message: string,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "PipelineError";
+  }
+}
+
+type GenerationTraceEvent = {
+  at: string;
+  stage: string;
+  status: "info" | "error";
+  message: string;
+  code?: FailureCode;
+};
+
+const generationTraceStore = new Map<number, GenerationTraceEvent[]>();
+const TRACE_LIMIT = 120;
 
 function requireAuth(req: any, res: any, next: any) {
   const auth = getAuth(req);
@@ -42,6 +85,26 @@ function pushUpdate(genId: number, data: Record<string, unknown>) {
 
 function log(genId: number, msg: string) {
   console.log(`[gen ${genId}] ${msg}`);
+}
+
+function resetTrace(genId: number) {
+  generationTraceStore.set(genId, []);
+}
+
+function recordTrace(genId: number, event: Omit<GenerationTraceEvent, "at">) {
+  const trace = generationTraceStore.get(genId) ?? [];
+  trace.push({
+    at: new Date().toISOString(),
+    ...event,
+  });
+  if (trace.length > TRACE_LIMIT) {
+    trace.splice(0, trace.length - TRACE_LIMIT);
+  }
+  generationTraceStore.set(genId, trace);
+}
+
+function getTrace(genId: number) {
+  return generationTraceStore.get(genId) ?? [];
 }
 
 async function markStep(genId: number, fields: Record<string, unknown>) {
@@ -189,115 +252,152 @@ async function removeBackground(base64Image: string): Promise<string> {
   return `data:image/png;base64,${buf.toString("base64")}`;
 }
 
-// ─── Replicate predictions ────────────────────────────────────────────────────
-
-async function replicatePredict(
-  genId: number,
-  modelPath: string,
-  input: Record<string, unknown>,
-): Promise<unknown[]> {
-  const token = process.env.REPLICATE_API_TOKEN;
-  if (!token) throw new Error("REPLICATE_API_TOKEN not set");
-  const headers = { Authorization: `Token ${token}`, "Content-Type": "application/json" };
-
-  const createRes = await fetch(`https://api.replicate.com/v1/models/${modelPath}/predictions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ input }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!createRes.ok) {
-    const t = await createRes.text();
-    throw new Error(`Replicate create [${modelPath}] ${createRes.status}: ${t.slice(0, 300)}`);
-  }
-  const pred = (await createRes.json()) as { id: string };
-  log(genId, `Replicate [${modelPath}] prediction: ${pred.id}`);
-
-  const deadline = Date.now() + 600_000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 8_000));
-    const poll = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, { headers, signal: AbortSignal.timeout(15_000) });
-    if (!poll.ok) throw new Error(`Replicate poll ${poll.status}`);
-    const data = (await poll.json()) as { status: string; output?: unknown[]; error?: string };
-    log(genId, `Replicate status: ${data.status}`);
-    if (data.status === "succeeded") return data.output ?? [];
-    if (data.status === "failed" || data.status === "canceled") throw new Error(`Replicate ${data.status}: ${data.error}`);
-  }
-  throw new Error(`Replicate timed out`);
-}
-
-async function runReplicateTripoSR(genId: number, cleanImg: string): Promise<void> {
-  log(genId, "Replicate TripoSR →");
-  const output = await replicatePredict(genId, "stability-ai/triposr", {
-    image: cleanImg,
-    do_remove_background: false,
-    foreground_ratio: 0.85,
-  });
-  const urls = (output ?? []) as string[];
-  log(genId, `TripoSR output: ${JSON.stringify(urls).slice(0, 200)}`);
-  const token = process.env.REPLICATE_API_TOKEN!;
-  const authH = { Authorization: `Token ${token}` };
-  const glbUrl = urls.find((u) => typeof u === "string" && u.toLowerCase().includes(".glb"));
-  const objUrl = urls.find((u) => typeof u === "string" && u.toLowerCase().includes(".obj"));
-  const meshUrl = glbUrl ?? objUrl ?? (typeof urls[0] === "string" ? urls[0] : null);
-  if (!meshUrl) throw new Error("TripoSR: no mesh URL");
-  const modelDataUrl = await downloadAsDataUrl(meshUrl, authH);
-  await markStep(genId, { status: "completed", modelGlbUrl: modelDataUrl });
-  log(genId, "Replicate TripoSR done ✓");
-}
-
-async function runReplicateInstantMesh(genId: number, cleanImg: string): Promise<void> {
-  log(genId, "Replicate InstantMesh →");
-  const output = await replicatePredict(genId, "camenduru/instantmesh", {
-    image_path: cleanImg,
-    export_mesh: true,
-  });
-  const urls = (output ?? []) as string[];
-  const token = process.env.REPLICATE_API_TOKEN!;
-  const authH = { Authorization: `Token ${token}` };
-  const meshUrl = urls.find((u) => typeof u === "string" && (u.includes(".glb") || u.includes(".obj"))) ?? urls[0];
-  if (!meshUrl || typeof meshUrl !== "string") throw new Error("InstantMesh: no mesh URL");
-  const imgUrl = urls.find((u) => typeof u === "string" && (u.includes(".png") || u.includes(".jpg")));
-  if (imgUrl) {
-    try {
-      const mvsUrl = await downloadAsDataUrl(imgUrl, authH);
-      await markStep(genId, { multiviewImageUrl: mvsUrl });
-    } catch { /* non-fatal */ }
-  }
-  const modelDataUrl = await downloadAsDataUrl(meshUrl, authH);
-  await markStep(genId, { status: "completed", modelGlbUrl: modelDataUrl });
-  log(genId, "Replicate InstantMesh done ✓");
-}
-
 // ─── HF Gradio Spaces (fallback) ─────────────────────────────────────────────
 
-async function callGradioSSE(spaceUrl: string, apiName: string, data: unknown[], timeoutMs = 300_000): Promise<unknown[]> {
-  const hfToken = process.env.HF_TOKEN;
-  const authH: Record<string, string> = hfToken ? { Authorization: `Bearer ${hfToken}` } : {};
-  const submitRes = await fetch(`${spaceUrl}/call/${apiName}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authH },
-    body: JSON.stringify({ data }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!submitRes.ok) {
-    const t = await submitRes.text();
-    throw new Error(`Gradio [${apiName}] ${submitRes.status}: ${t.slice(0, 200)}`);
+function normalizeToArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (value == null) return [];
+  return [value];
+}
+
+function parseSsePayload(raw: string): unknown[] {
+  const lines = raw.split("\n");
+  const allDataPayloads: string[] = [];
+  let completePayload: string | null = null;
+  let currentEvent = "";
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      currentEvent = line.slice(6).trim();
+      continue;
+    }
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (currentEvent === "error") {
+      throw new PipelineError("HF_SCHEMA_MISMATCH", `Gradio error event: ${payload}`);
+    }
+    if (currentEvent === "complete") {
+      completePayload = payload;
+    }
+    allDataPayloads.push(payload);
   }
-  const { event_id } = (await submitRes.json()) as { event_id: string };
-  const pollRes = await fetch(`${spaceUrl}/call/${apiName}/${event_id}`, { headers: authH, signal: AbortSignal.timeout(timeoutMs) });
-  if (!pollRes.ok) throw new Error(`Gradio poll ${pollRes.status}`);
-  const raw = await pollRes.text();
-  for (const block of raw.split("\n\n")) {
-    const lines = block.split("\n");
-    const evtType = lines.find((l) => l.startsWith("event:"))?.replace("event:", "").trim();
-    const payload = lines.find((l) => l.startsWith("data:"))?.replace("data:", "").trim();
-    if (evtType === "error") throw new Error(`Gradio [${apiName}] error: ${payload}`);
-    if (evtType === "complete" && payload) {
-      try { return JSON.parse(payload); } catch { return [payload]; }
+
+  if (completePayload) {
+    try {
+      const parsed = JSON.parse(completePayload) as Record<string, unknown>;
+      if (Array.isArray(parsed.data)) return parsed.data;
+      if ("data" in parsed) return normalizeToArray(parsed.data);
+      return normalizeToArray(parsed);
+    } catch {
+      return normalizeToArray(completePayload);
     }
   }
-  throw new Error(`Gradio [${apiName}]: no complete event`);
+
+  // Handle cases where endpoint returns direct JSON without SSE framing.
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (Array.isArray(parsed.data)) return parsed.data;
+    if ("data" in parsed) return normalizeToArray(parsed.data);
+    return normalizeToArray(parsed);
+  } catch {
+    if (allDataPayloads.length > 0) return allDataPayloads;
+    return [trimmed];
+  }
+}
+
+async function callGradioSSE(
+  genId: number,
+  spaceUrl: string,
+  apiName: string,
+  data: unknown[],
+  timeoutMs = providerConfig.hfTimeoutJobMs,
+): Promise<unknown[]> {
+  const hfToken = process.env.HF_TOKEN;
+  const authH: Record<string, string> = hfToken ? { Authorization: `Bearer ${hfToken}` } : {};
+
+  let submitAttempt = 0;
+  let eventId: string | null = null;
+  while (submitAttempt < providerConfig.hfRetryMax) {
+    submitAttempt += 1;
+    try {
+      const submitRes = await fetch(`${spaceUrl}/call/${apiName}`, {
+        method: "POST",
+        headers: { "Content-Type": APP_JSON, ...authH },
+        body: JSON.stringify({ data }),
+        signal: AbortSignal.timeout(providerConfig.hfTimeoutSubmitMs),
+      });
+      if (!submitRes.ok) {
+        const t = await submitRes.text();
+        if (submitRes.status >= 500 && submitAttempt < providerConfig.hfRetryMax) {
+          const waitMs = Math.min(providerConfig.hfPollMaxMs, providerConfig.hfPollBaseMs * submitAttempt);
+          recordTrace(genId, { stage: "hf_submit", status: "info", message: `Retry submit ${submitAttempt}/${providerConfig.hfRetryMax} after ${submitRes.status}` });
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        throw new PipelineError("HF_SCHEMA_MISMATCH", `Gradio [${apiName}] ${submitRes.status}: ${t.slice(0, 240)}`);
+      }
+      const parsed = (await submitRes.json()) as { event_id?: string };
+      if (!parsed.event_id) {
+        throw new PipelineError("HF_SCHEMA_MISMATCH", `Missing event_id for ${apiName}`);
+      }
+      eventId = parsed.event_id;
+      break;
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.name === "TimeoutError";
+      if (isTimeout && submitAttempt < providerConfig.hfRetryMax) {
+        const waitMs = Math.min(providerConfig.hfPollMaxMs, providerConfig.hfPollBaseMs * submitAttempt);
+        recordTrace(genId, { stage: "hf_submit", status: "info", message: `Timeout retry ${submitAttempt}/${providerConfig.hfRetryMax}` });
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      if (isTimeout) throw new PipelineError("HF_SUBMIT_TIMEOUT", `HF submit timeout for ${apiName}`);
+      throw err;
+    }
+  }
+
+  if (!eventId) {
+    throw new PipelineError("HF_SUBMIT_TIMEOUT", `Unable to submit ${apiName}`);
+  }
+
+  const startedAt = Date.now();
+  let intervalMs = providerConfig.hfPollBaseMs;
+  let pollAttempt = 0;
+  while (Date.now() - startedAt < timeoutMs) {
+    pollAttempt += 1;
+    try {
+      const pollRes = await fetch(`${spaceUrl}/call/${apiName}/${eventId}`, {
+        headers: authH,
+        signal: AbortSignal.timeout(Math.min(intervalMs + 5_000, 30_000)),
+      });
+      if (!pollRes.ok) {
+        if (pollRes.status >= 500) {
+          recordTrace(genId, { stage: "hf_poll", status: "info", message: `Transient poll ${pollRes.status}; retrying` });
+          await new Promise((r) => setTimeout(r, intervalMs));
+          intervalMs = Math.min(providerConfig.hfPollMaxMs, Math.round(intervalMs * 1.4));
+          continue;
+        }
+        const txt = await pollRes.text();
+        throw new PipelineError("HF_SCHEMA_MISMATCH", `Gradio poll ${pollRes.status}: ${txt.slice(0, 240)}`);
+      }
+      const raw = await pollRes.text();
+      const parsed = parseSsePayload(raw);
+      if (parsed.length > 0) {
+        return parsed;
+      }
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.name === "TimeoutError";
+      if (!isTimeout) throw err;
+      recordTrace(genId, { stage: "hf_poll", status: "info", message: `Poll timeout on attempt ${pollAttempt}; backing off` });
+    }
+    if (pollAttempt % 3 === 0) {
+      recordTrace(genId, { stage: "hf_poll", status: "info", message: `Still waiting for ${apiName}` });
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+    intervalMs = Math.min(providerConfig.hfPollMaxMs, Math.round(intervalMs * 1.2));
+  }
+
+  throw new PipelineError("HF_QUEUE_TIMEOUT", `Gradio [${apiName}] exceeded timeout`);
 }
 
 function fileDataInput(base64: string) {
@@ -307,49 +407,77 @@ function fileDataInput(base64: string) {
 
 async function resolveGradioFile(output: unknown, spaceUrl: string): Promise<string | null> {
   if (!output) return null;
-  const hfH = process.env.HF_TOKEN ? { Authorization: `Bearer ${process.env.HF_TOKEN}` } : {};
+  const hfH: Record<string, string> = {};
+  if (process.env.HF_TOKEN) {
+    hfH.Authorization = `Bearer ${process.env.HF_TOKEN}`;
+  }
   let rawUrl: string;
   if (typeof output === "string") {
-    rawUrl = output.startsWith("data:") || output.startsWith("http") ? output : `${spaceUrl}/file=${output}`;
+    rawUrl = output.startsWith("data:") || output.startsWith("http") ? output : `${spaceUrl}/file=${output.replace(/^\//, "")}`;
   } else {
     const o = output as Record<string, unknown>;
-    rawUrl = (o.url ?? (o.path ? `${spaceUrl}/file=${o.path}` : o.name ? `${spaceUrl}/file=${o.name}` : null)) as string;
+    rawUrl = (o.url ?? (o.path ? `${spaceUrl}/file=${String(o.path).replace(/^\//, "")}` : o.name ? `${spaceUrl}/file=${String(o.name).replace(/^\//, "")}` : null)) as string;
   }
   if (!rawUrl) return null;
   if (rawUrl.startsWith("data:")) return rawUrl;
-  try { return await downloadAsDataUrl(rawUrl, hfH); } catch { return rawUrl; }
+  try {
+    return await downloadAsDataUrl(rawUrl, hfH);
+  } catch {
+    return rawUrl;
+  }
 }
 
-async function runHfInstantMesh(genId: number, cleanImg: string): Promise<void> {
-  const url = "https://tencentarc-instantmesh.hf.space";
+function ensureOutput(stage: string, value: unknown): unknown {
+  if (value == null || value === "") {
+    throw new PipelineError("HF_SCHEMA_MISMATCH", `Missing output for ${stage}`);
+  }
+  return value;
+}
+
+async function runHfSigmitchInstantMesh(genId: number, cleanImg: string): Promise<void> {
+  const url = providerConfig.hfSpaceBaseUrlPrimary;
   const img = fileDataInput(cleanImg);
-  log(genId, "HF InstantMesh → preprocess");
-  const pre = await callGradioSSE(url, "preprocess", [img, false], 90_000);
-  log(genId, "HF InstantMesh → generate_mvs");
-  const mvs = await callGradioSSE(url, "generate_mvs", [pre[0], 75, 42], 120_000);
-  const mvsUrl = await resolveGradioFile(mvs[0], url);
+  recordTrace(genId, { stage: "provider_select", status: "info", message: `Provider ${providerConfig.modelProviderPrimary} (${providerConfig.hfSpaceIdPrimary})` });
+
+  log(genId, "SIGMitch/InstantMesh → check_input_image");
+  const check = await callGradioSSE(genId, url, "check_input_image", [img], providerConfig.hfTimeoutJobMs);
+  recordTrace(genId, { stage: "sigmitch_check_input_image", status: "info", message: `Output items: ${check.length}` });
+
+  log(genId, "SIGMitch/InstantMesh → preprocess");
+  const pre = await callGradioSSE(genId, url, "preprocess", [img, false], providerConfig.hfTimeoutJobMs);
+  const processedInput = ensureOutput("preprocess", pre[0]);
+  recordTrace(genId, { stage: "sigmitch_preprocess", status: "info", message: "Preprocess completed" });
+
+  log(genId, "SIGMitch/InstantMesh → generate_mvs");
+  const mvs = await callGradioSSE(
+    genId,
+    url,
+    "generate_mvs",
+    [processedInput, providerConfig.sigmitchSampleSteps, providerConfig.sigmitchSampleSeed],
+    providerConfig.hfTimeoutJobMs,
+  );
+  const mvsOutput = ensureOutput("generate_mvs", mvs[0]);
+  const mvsUrl = await resolveGradioFile(mvsOutput, url);
   if (mvsUrl) await markStep(genId, { multiviewImageUrl: mvsUrl });
-  log(genId, "HF InstantMesh → make3d");
-  const mesh = await callGradioSSE(url, "make3d", [mvs[0]], 200_000);
-  const glbUrl = await resolveGradioFile(mesh[1] ?? mesh[0], url);
-  if (!glbUrl) throw new Error("make3d: no GLB");
-  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
-}
+  recordTrace(genId, { stage: "sigmitch_generate_mvs", status: "info", message: "Multi-view generation completed" });
 
-async function runHfTripoSR(genId: number, cleanImg: string): Promise<void> {
-  const url = "https://stabilityai-triposr.hf.space";
-  const img = fileDataInput(cleanImg);
-  const pre = await callGradioSSE(url, "preprocess", [img, false, 0.85], 60_000);
-  const out = await callGradioSSE(url, "generate", [pre[0], 256, ["glb"]], 120_000);
-  const glbUrl = await resolveGradioFile(out[0], url);
-  if (!glbUrl) throw new Error("HF TripoSR: no GLB");
-  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl });
+  log(genId, "SIGMitch/InstantMesh → make3d");
+  const mesh = await callGradioSSE(genId, url, "make3d", [], providerConfig.hfTimeoutJobMs);
+  const objUrl = await resolveGradioFile(mesh[0], url);
+  const glbUrl = await resolveGradioFile(mesh[1] ?? mesh[0], url);
+  if (!glbUrl) {
+    throw new PipelineError("HF_FILE_RESOLVE_FAILED", "make3d: no GLB artifact");
+  }
+  await markStep(genId, { status: "completed", modelGlbUrl: glbUrl, modelObjUrl: objUrl ?? null });
+  recordTrace(genId, { stage: "sigmitch_make3d", status: "info", message: "SIGMitch returned mesh artifacts" });
 }
 
 // ─── Full AI pipeline ─────────────────────────────────────────────────────────
 
 async function runAiProcessing(genId: number, imageBase64: string): Promise<void> {
   log(genId, "Starting AI pipeline");
+  resetTrace(genId);
+  recordTrace(genId, { stage: "pipeline", status: "info", message: "Pipeline started" });
   try {
     await markStep(genId, { status: "processing" });
 
@@ -360,35 +488,35 @@ async function runAiProcessing(genId: number, imageBase64: string): Promise<void
       cleanImg = await removeBackground(imageBase64);
       await markStep(genId, { previewImageUrl: cleanImg });
       log(genId, "remove.bg done ✓");
+      recordTrace(genId, { stage: "remove_bg", status: "info", message: "Background removed successfully" });
     } catch (err) {
       log(genId, `remove.bg failed, using original: ${err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      recordTrace(genId, { stage: "remove_bg", status: "error", code: "REMOVE_BG_FAILED", message: msg });
     }
 
-    // Step 2: 3D generation — try pipelines in order
-    const hasReplicate = !!process.env.REPLICATE_API_TOKEN;
-
-    if (!hasReplicate) {
-      log(genId, "⚠️  REPLICATE_API_TOKEN not set — HF Spaces currently unreliable, will use fallback");
-    }
-
+    // Step 2: 3D generation — HF primary with offline fallback
     const pipelines: { name: string; fn: () => Promise<void> }[] = [
-      ...(hasReplicate ? [
-        { name: "Replicate/TripoSR",     fn: () => runReplicateTripoSR(genId, cleanImg) },
-        { name: "Replicate/InstantMesh", fn: () => runReplicateInstantMesh(genId, cleanImg) },
-      ] : []),
-      { name: "HF/InstantMesh", fn: () => runHfInstantMesh(genId, cleanImg) },
-      { name: "HF/TripoSR",     fn: () => runHfTripoSR(genId, cleanImg) },
+      { name: "HF/SIGMitch-InstantMesh", fn: () => runHfSigmitchInstantMesh(genId, cleanImg) },
       // Always-available fallback: textured GLTF plane from the bg-removed image
-      { name: "Fallback/GLTF",  fn: () => runFallbackGltf(genId, cleanImg) },
+      { name: "Fallback/GLTF", fn: () => runFallbackGltf(genId, cleanImg) },
     ];
 
     for (const p of pipelines) {
       try {
         log(genId, `Trying ${p.name}`);
+        recordTrace(genId, { stage: "pipeline", status: "info", message: `Trying ${p.name}` });
         await p.fn();
+        recordTrace(genId, { stage: "pipeline", status: "info", message: `${p.name} succeeded` });
         return; // success
       } catch (err) {
         log(genId, `${p.name} failed: ${err}`);
+        const code =
+          err instanceof PipelineError
+            ? err.code
+            : "HF_SCHEMA_MISMATCH";
+        const message = err instanceof Error ? err.message : String(err);
+        recordTrace(genId, { stage: "pipeline", status: "error", code, message: `${p.name} failed: ${message}` });
         await markStep(genId, { multiviewImageUrl: null });
       }
     }
@@ -397,6 +525,8 @@ async function runAiProcessing(genId: number, imageBase64: string): Promise<void
     throw new Error("All pipelines failed (including fallback)");
   } catch (err) {
     log(genId, `Fatal: ${err}`);
+    const message = err instanceof Error ? err.message : String(err);
+    recordTrace(genId, { stage: "pipeline", status: "error", message: `Fatal: ${message}` });
     await markStep(genId, { status: "failed" });
   }
 }
@@ -460,6 +590,29 @@ router.get("/generations/:id/stream", requireAuth, async (req: any, res): Promis
   req.on("close", () => {
     clearInterval(heartbeat);
     sseClients.get(id)?.delete(res);
+  });
+});
+
+router.get("/generations/:id/debug", requireAuth, async (req: any, res): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [gen] = await db
+    .select()
+    .from(generationsTable)
+    .where(and(eq(generationsTable.id, id), eq(generationsTable.userId, req.userId)));
+  if (!gen) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
+  res.json({
+    generationId: id,
+    status: gen.status,
+    trace: getTrace(id),
   });
 });
 
