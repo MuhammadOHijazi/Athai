@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { AppLayout } from "@/components/layout/app-layout";
 import { useGetGeneration, useProcessGeneration, getGetGenerationQueryKey } from "@workspace/api-client-react";
 import { useParams, Link } from "wouter";
@@ -6,6 +6,7 @@ import { ModelViewer } from "@/components/3d/model-viewer";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ImageLightbox, LightboxTrigger } from "@/components/ui/image-lightbox";
 import {
   Download, ArrowLeft, Loader2, AlertCircle, CheckCircle2,
   Box, RefreshCw, ImageIcon, Layers, Sparkles, Upload, Zap
@@ -47,9 +48,10 @@ function inferStepStatuses(gen: Generation): [StepStatus, StepStatus, StepStatus
 
 // ─── Step card ────────────────────────────────────────────────────────────────
 
-function StepCard({ step, label, sublabel, status, imageUrl, icon: Icon, isLast }: {
+function StepCard({ step, label, sublabel, status, imageUrl, icon: Icon, isLast, onImageOpen }: {
   step: number; label: string; sublabel: string; status: StepStatus;
   imageUrl?: string | null; icon: React.ComponentType<any>; isLast?: boolean;
+  onImageOpen?: (src: string) => void;
 }) {
   const cfg = {
     waiting: { ring: "border-border/40", bg: "bg-muted/30", badge: "bg-muted text-muted-foreground", text: "Waiting" },
@@ -67,6 +69,7 @@ function StepCard({ step, label, sublabel, status, imageUrl, icon: Icon, isLast 
           transition={{ delay: (step - 1) * 0.08 }}
           className={`rounded-xl border-2 ${cfg.ring} ${cfg.bg} overflow-hidden flex flex-col h-full transition-all duration-500`}
         >
+          <LightboxTrigger src={imageUrl && status === "done" ? imageUrl : null} alt={label} onOpen={onImageOpen ?? (() => {})}>
           <div className="relative aspect-square bg-muted/20 flex items-center justify-center overflow-hidden">
             <AnimatePresence mode="wait">
               {imageUrl ? (
@@ -89,6 +92,7 @@ function StepCard({ step, label, sublabel, status, imageUrl, icon: Icon, isLast 
               </div>
             )}
           </div>
+          </LightboxTrigger>
           <div className="p-3 border-t border-border/30 flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 mb-0.5">
@@ -132,6 +136,7 @@ export default function ModelDetail() {
   const id = parseInt(params.id || "0", 10);
   const queryClient = useQueryClient();
   const pollIntervalRef = useRef<number | null>(null);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
   const { data: generation, isLoading, isError } = useGetGeneration(id, {
     query: { enabled: !!id, queryKey: getGetGenerationQueryKey(id) },
@@ -281,7 +286,7 @@ export default function ModelDetail() {
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 items-stretch">
             {pipeline.map((p, i) => (
-              <StepCard key={p.step} {...p} isLast={i === pipeline.length - 1} />
+              <StepCard key={p.step} {...p} isLast={i === pipeline.length - 1} onImageOpen={setLightboxSrc} />
             ))}
           </div>
           {isFallbackModel && (
@@ -422,6 +427,7 @@ export default function ModelDetail() {
           </div>
         </div>
       </div>
+      <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
     </AppLayout>
   );
 }

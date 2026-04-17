@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import athaiBrandLogo from "@assets/image_1775398238106.png";
+import athaiBrandLogo from "@assets/logo.png";
 
 export function Footer() {
   return (

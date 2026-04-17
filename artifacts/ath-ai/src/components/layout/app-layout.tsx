@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useUser, useClerk } from "@clerk/react";
 import { LayoutDashboard, PlusSquare, Box, Settings, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
-import athaiBrandLogo from "@assets/image_1775398238106.png";
+import athaiBrandLogo from "@assets/logo.png";
 
 const navItems = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },

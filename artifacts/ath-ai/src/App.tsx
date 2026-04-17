@@ -14,7 +14,7 @@ import Generate from "@/pages/generate";
 import Models from "@/pages/models";
 import ModelDetail from "@/pages/model-detail";
 import Settings from "@/pages/settings";
-import athaiBrandLogo from "@assets/image_1775398238106.png";
+import athaiBrandLogo from "@assets/logo.png";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
