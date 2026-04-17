@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "Uvd8TRCJeUDVTVHzqiGyH"
+uri = "file://attached_assets/live_multiview_result.png"
+type = "image"
+title = "Live Multiview Image from InstantMesh"
